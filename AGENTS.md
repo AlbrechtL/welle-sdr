@@ -1,0 +1,126 @@
+<!--
+Copyright The Zephyr Project Contributors
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# rtlsdr_emu: notes for coding agents
+
+Zephyr firmware that makes a WCH CH32V307V-EVT-R1 enumerate as an RTL-SDR dongle (RTL2832U +
+R820T2, USB `0bda:2838`), so the stock librtlsdr tools work without a host driver. It streams
+dummy data for now; real SDR logic and a physical R820T2 come later. This file records what is
+not obvious from the code. Code follows Zephyr style (`zephyr/doc/contribute/style/`); new files
+start with the SPDX header lines used in the existing files.
+
+## Layout
+
+- `modules/udc_wch_usbhs/`: out-of-tree Zephyr module with the UDC driver for the CH32V307 USBHS
+  controller, the `wch,usbhs` binding and Kconfig. It is loaded through `ZEPHYR_EXTRA_MODULES` in
+  `CMakeLists.txt`. The zephyr tree stays unmodified: keep it that way.
+- `boards/ch32v307v_evt_r1.overlay`: the USBHS node (`0x40023400`, IRQ 85, clock
+  `CH32V20X_V30X_CLOCK_USBHS`), labeled `zephyr_udc0`. The SoC dtsi has no USB node.
+- `src/main.c`: USB device setup (VID/PID, strings, HS and FS configurations).
+- `src/rtl2832u.c`: vendor class with the librtlsdr control protocol and bulk IN streaming.
+- `src/r820t2.c`: emulated tuner register file. Replace its `r820t2_i2c_write()`/`_read()` to
+  talk to a real R820T2.
+- `src/sample_src.c`: dummy sample source. This is the hook for the SDR signal path.
+
+## Hardware and host setup
+
+- USB data goes over USBHS connector P6 (PB6 DM, PB7 DP, built-in HS PHY, no pinctrl). The
+  WCH-Link debugger shows up as `/dev/ttyACM0`; its serial port carries the USART1 console at
+  115200 baud.
+- `west` is only available after `source ~/src/zephyrproject/.venv/bin/activate`.
+- Build from the workspace root: `west build -b ch32v307v_evt_r1 apps/rtlsdr_emu -d
+  apps/rtlsdr_emu/build`, flash with `west flash -d apps/rtlsdr_emu/build` (runner minichlink).
+- Console: `picocom -b 115200 /dev/ttyACM0` (exit with Ctrl-A Ctrl-X). Start it before
+  flashing, because the boot log is printed right after reset. For non-interactive capture
+  (scripts, agents), pyserial from the venv works too.
+- Default target: 32 KB SRAM, about 26 KB used. Larger buffers need
+  `ch32v307v_evt_r1/ch32v307/ram_64k` or a bigger variant (changes the flash/RAM split).
+
+## Verifying on the host
+
+- `lsusb -t` must show the device at `480M`, and `lsusb -v -d 0bda:2838` must show bulk EP 0x81
+  with `wMaxPacketSize 512` (64 means the stack picked the FS descriptors at HS).
+- `rtl_test -t`: must print `Found Rafael Micro R820T tuner` and the gain list with no
+  `r82xx_write: i2c wr failed` lines.
+- `rtl_test` (test mode, 8-bit counter): `Samples per million lost (minimum): 0`. Stop it with
+  SIGINT and run it through `stdbuf -o0 -e0`, otherwise the output is lost.
+- `rtl_test -p`: reports the real sample rate every 10 s (currently about 2.25 MS/s unpaced).
+- `rtl_sdr -n N`: N must not be a multiple of 131072, or rtl_sdr never stops (host tool bug:
+  its stop condition is `bytes_to_read < len`).
+- The Linux `dvb_usb_rtl28xxu` driver may bind first. librtlsdr detaches it; no blacklist is
+  needed with the current firmware.
+- To see rejected control requests, build with `-- -DCONFIG_USBD_LOG_LEVEL_INF=y`: the stack
+  logs `protocol error` with a hexdump of the SETUP packet. The option sticks in the CMake
+  cache; rebuild with `-p` to drop it. Expected stalls: I2C probes to 0xc8 (E4000) and 0xc6
+  (FC0013).
+
+## librtlsdr protocol (emulated in rtl2832u.c)
+
+- Every request uses `bRequest 0`, vendor type, device recipient. Read: `0xC0`,
+  `wIndex = block << 8`. Write: `0x40`, `wIndex = block << 8 | 0x10`. Blocks: DEMOD 0, USB 1,
+  SYS 2, TUN 3, ROM 4, IR 5, IIC 6. 2-byte register writes are big-endian.
+- Demod: `wValue = reg << 8 | 0x20`, page in `wIndex` bits 3..0. librtlsdr follows every demod
+  write with a dummy read of page 0x0a reg 0x01.
+  - Page 0 reg 0x19: `0x03` test mode (counter output), `0x05` normal. Test is bit 1.
+  - Page 1 reg 0x01 bit 3: I2C repeater to the tuner.
+  - Page 1 regs 0x9f..0xa2: resampler ratio, big-endian, high half written first. Sample rate =
+    28.8 MHz * 2^22 / ratio.
+  - Page 1 regs 0x19..0x1b: IF frequency.
+- USB block `USB_EPA_CTL` (0x2148): `0x1002` stops and flushes the FIFO, `0x0000` runs. Streaming
+  only runs while it is 0.
+- IIC: `wValue` is the 8-bit I2C address. A NACK must be a STALL (`to_host` returns NULL,
+  `to_dev` returns an error).
+  - 0x20 (the demodulator itself) always ACKs. The kernel driver identifies RTL2832U against
+    RTL2831U with a zero-length read there; if it fails, it loads `rtl2830`.
+  - 0x34 (R820T2) ACKs only while the repeater is on.
+- R820T2: reads always start at register 0 and return bit-reversed bytes. Raw byte 0 must be
+  0x69 (chip ID check). Reg 2 bit 6 (logical) means PLL locked, otherwise librtlsdr prints
+  `PLL not locked`. Reg 4 holds VCO fine tune (bits 5:4) and the filter calibration code (bits
+  3:0). Writes to addresses beyond the 32 registers must still ACK: librtlsdr writes reg 0x21.
+
+## Zephyr USB stack details
+
+- librtlsdr hardcodes EP 0x81. The stack assigns the first free IN endpoint, so the RTL2832U
+  class must stay the only class with an IN endpoint (no CDC-ACM, no loopback in this build).
+- Requests with `wLength == 0` are treated as to-device whatever bit 7 of `bmRequestType` says,
+  so they arrive in `control_to_dev`.
+- `control_to_dev` is called twice for writes with data: first with `buf == NULL` (accept or
+  reject), then with the received data.
+- Bulk IN buffers come from a header-only `UDC_BUF_POOL_DEFINE` pool with
+  `CONFIG_RTLSDR_EMU_XFER_SIZE` data each. The size must be a multiple of 512: a short packet
+  ends the host's bulk transfer.
+- `usbd_ep_dequeue()` on an enabled endpoint logs `ep 0x81 is not halted|disabled` at INF, but
+  still cancels the queue. That is how the FIFO flush works.
+
+## UDC driver (udc_wch_usbhs.c)
+
+- Register map and bit macros come from `modules/hal/wch/ch32fun/ch32v30xhw.h` (`USBHSD_TypeDef`,
+  `USBHS_*`). The driver includes Zephyr's private `drivers/usb/udc/udc_common.h`, which is not
+  stable API. A Zephyr update may break the build.
+- PHY PLL: `RCC->CFGR2` is set up by the driver (HSE 8 MHz / 2 gives the 4 MHz reference),
+  following the `eth_wch.c` precedent.
+- The bus reset interrupt fires before the HS chirp finishes, so `SPEED_TYPE` still reads FS.
+  `UDC_EVT_RESET` is therefore submitted at the first SETUP after a reset; do not move it back
+  into the reset handler.
+- `USBHS_UC_INT_BUSY` makes the controller NAK everything while an interrupt flag is pending, so
+  only one completion is reported at a time. Data toggles are handled in software (flip after
+  each acknowledged packet; DATA1 after SETUP).
+- EP0 uses one DMA buffer for SETUP, OUT and IN. The stack queues data IN and status OUT
+  together, which is safe because status is a ZLP.
+- Non-control endpoint DMA buffers come from `sys_mem_blocks` with
+  `sys_mem_blocks_alloc_contiguous()` (`CONFIG_UDC_WCH_USBHS_BUF_POOL_SIZE`).
+- ch32fun masks the endpoint DMA address registers to 16 bits. This is unverified with more than
+  64 KB SRAM: check it when switching to a larger RAM variant.
+
+## Known limits and next steps
+
+- Throughput is about 2.25 MS/s (4.5 MB/s), about one 512-byte packet per microframe, probably
+  because every packet is re-armed from the ISR and NAKed in between. Candidates: double
+  buffering (`BUF_MODE`) or DMA straight from the net_buf. Real dongles do 2.4 to 3.2 MS/s.
+- The stream is unpaced; `sample_src_set_rate()` receives the host's rate but ignores it.
+- The driver has not been tested with Linux `testusb` (loopback build) or with OUT endpoints
+  other than EP0.
+- Later phases: decode the R820T2 PLL registers into a frequency and gain, use a real R820T2
+  over I2C, and replace the dummy sample source.
