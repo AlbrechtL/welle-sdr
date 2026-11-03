@@ -1,0 +1,39 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config UDC_WCH_USBHS
+	bool "WCH USBHS device controller driver"
+	default y
+	depends on DT_HAS_WCH_USBHS_ENABLED
+	depends on UDC_DRIVER
+	select UDC_DRIVER_HAS_HIGH_SPEED_SUPPORT
+	select SYS_MEM_BLOCKS
+	select EVENTS
+	help
+	  Driver for the USBHS device controller with built-in high-speed
+	  PHY found in WCH CH32V305, CH32V307 and CH32V317.
+
+if UDC_WCH_USBHS
+
+config UDC_WCH_USBHS_STACK_SIZE
+	int "UDC controller driver internal thread stack size"
+	default 768
+	help
+	  Device controller driver internal thread stack size.
+
+config UDC_WCH_USBHS_THREAD_PRIORITY
+	int "UDC controller driver thread priority"
+	default 8
+	help
+	  Device controller driver thread priority.
+
+config UDC_WCH_USBHS_BUF_POOL_SIZE
+	int "Endpoint DMA buffer pool size"
+	default 2048
+	range 512 32768
+	help
+	  Size of the pool from which the DMA buffers of the non-control
+	  endpoints are allocated, in multiples of 64 bytes. A high-speed
+	  bulk endpoint needs 512 bytes.
+
+endif # UDC_WCH_USBHS

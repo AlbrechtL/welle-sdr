@@ -1,0 +1,21 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "RTL-SDR emulator"
+
+config RTLSDR_EMU_XFER_SIZE
+	int "Bulk IN transfer buffer size"
+	default 4096
+	help
+	  Size of one bulk IN transfer buffer. Must be a multiple of 512 so
+	  that the stream contains no short packets, which would end the
+	  host's bulk transfer early.
+
+config RTLSDR_EMU_XFER_COUNT
+	int "Number of bulk IN transfer buffers"
+	default 2
+	range 2 8
+	help
+	  Number of bulk IN transfers kept queued on the endpoint.
+
+source "Kconfig.zephyr"

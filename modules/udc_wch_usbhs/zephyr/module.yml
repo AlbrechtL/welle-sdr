@@ -1,0 +1,9 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+name: udc_wch_usbhs
+build:
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .

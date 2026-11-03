@@ -1,0 +1,23 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/clock/ch32v20x_30x-clocks.h>
+
+/ {
+	soc {
+		/* USBHS controller with built-in HS PHY on PB6 (DM) / PB7 (DP), connector P6 */
+		zephyr_udc0: usbhs: usbd@40023400 {
+			compatible = "wch,usbhs";
+			reg = <0x40023400 0x400>;
+			clocks = <&rcc CH32V20X_V30X_CLOCK_USBHS>;
+			interrupt-parent = <&pfic>;
+			interrupts = <85>;
+			num-bidir-endpoints = <16>;
+			maximum-speed = "high-speed";
+			status = "okay";
+		};
+	};
+};

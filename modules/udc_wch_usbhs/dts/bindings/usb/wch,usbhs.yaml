@@ -1,0 +1,20 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  WCH USBHS device controller with built-in high-speed PHY
+  (CH32V305, CH32V307, CH32V317).
+
+compatible: "wch,usbhs"
+
+include: usb-ep.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    required: true
