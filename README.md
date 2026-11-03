@@ -15,9 +15,13 @@ The USBHS device controller driver is an out-of-tree module in
 `modules/udc_wch_usbhs`.
 
 ```
-west build -b ch32v307v_evt_r1 apps/rtlsdr_emu
+west build -b ch32v307v_evt_r1/ch32v307/ram_64k apps/rtlsdr_emu
 west flash
 rtl_test
 ```
 
-The console is on USART1 at 115200 baud, available through the WCH-Link serial port.
+The firmware needs the 256 KB flash / 64 KB SRAM split in the chip's option bytes.
+
+The console is on USART1 at 115200 baud, available through the WCH-Link serial port. It runs
+the Zephyr shell: `welle-sdr status` shows the stream state, sample rate, center frequency and
+tuner gain, and changes made by the host are logged.

@@ -24,6 +24,7 @@
 #include <zephyr/logging/log.h>
 
 #include "r820t2.h"
+#include "rtl2832u.h"
 #include "sample_src.h"
 
 LOG_MODULE_REGISTER(rtl2832u, LOG_LEVEL_INF);
@@ -51,9 +52,6 @@ enum rtl_block {
 /* USB_EPA_CTL, written big-endian: 0x1002 stalls and flushes the FIFO */
 #define RTL_USB_EPA_CTL 0x2148U
 
-#define RTL_DEMOD_PAGES     5U
-#define RTL_DEMOD_PAGE_SIZE 256U
-
 /* Demod page 0 reg 0x19: 0x03 selects the counter test output, 0x05 normal */
 #define RTL_DEMOD_TEST_PAGE 0U
 #define RTL_DEMOD_TEST_REG  0x19U
@@ -75,6 +73,14 @@ enum rtl_block {
 #define RTL_DEMOD_RSAMP_REG  0x9fU
 #define RTL_DEMOD_RSAMP_LEN  4U
 
+/* Demod page 1 regs 0x19..0x1b: IF frequency, 22-bit signed, big-endian */
+#define RTL_DEMOD_IF_PAGE 1U
+#define RTL_DEMOD_IF_REG  0x19U
+#define RTL_DEMOD_IF_LEN  3U
+
+/* Tuner state is logged once the host has not written it for this long */
+#define RTL_TUNER_LOG_DELAY K_MSEC(20)
+
 #define RTL_XTAL_FREQ 28800000ULL
 
 #define RTL_FS_BULK_MPS 64U
@@ -93,7 +99,7 @@ UDC_BUF_POOL_DEFINE(rtl_ep_pool, CONFIG_RTLSDR_EMU_XFER_COUNT, CONFIG_RTLSDR_EMU
 struct rtl_regs {
 	uint8_t usb[RTL_USB_REG_SIZE];
 	uint8_t sys[RTL_SYS_REG_SIZE];
-	uint8_t demod[RTL_DEMOD_PAGES][RTL_DEMOD_PAGE_SIZE];
+	uint8_t demod[RTL2832U_DEMOD_PAGES][RTL2832U_DEMOD_PAGE_SIZE];
 };
 
 struct rtl_desc {
@@ -109,7 +115,14 @@ struct rtl_data {
 	const struct usb_desc_header *const *const hs_desc;
 	struct rtl_regs regs;
 	atomic_t state;
+	/* Completed bulk IN transfers */
+	atomic_t xfers;
+	uint32_t sample_rate;
 };
+
+static void rtl_tuner_log_handler(struct k_work *work);
+
+static K_WORK_DELAYABLE_DEFINE(rtl_tuner_log_work, rtl_tuner_log_handler);
 
 static uint8_t rtl_get_bulk_in(struct usbd_class_data *const c_data)
 {
@@ -234,9 +247,15 @@ static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_
 		if (ratio != 0U && reg + len > RTL_DEMOD_RSAMP_REG + 2U) {
 			const uint32_t rate = (uint32_t)((RTL_XTAL_FREQ << 22) / ratio);
 
+			data->sample_rate = rate;
 			sample_src_set_rate(rate);
 			LOG_INF("Sample rate %u S/s", rate);
 		}
+	}
+
+	if (page == RTL_DEMOD_IF_PAGE && reg < RTL_DEMOD_IF_REG + RTL_DEMOD_IF_LEN &&
+	    reg + len > RTL_DEMOD_IF_REG) {
+		(void)k_work_reschedule(&rtl_tuner_log_work, RTL_TUNER_LOG_DELAY);
 	}
 }
 
@@ -253,7 +272,7 @@ static int rtl_write(struct usbd_class_data *const c_data,
 		const uint8_t page = setup->wIndex & 0x0FU;
 		const uint8_t reg = setup->wValue >> 8;
 
-		if (page < RTL_DEMOD_PAGES && reg + len <= RTL_DEMOD_PAGE_SIZE) {
+		if (page < RTL2832U_DEMOD_PAGES && reg + len <= RTL2832U_DEMOD_PAGE_SIZE) {
 			memcpy(&data->regs.demod[page][reg], src, len);
 			rtl_demod_written(c_data, page, reg, len);
 		}
@@ -262,6 +281,7 @@ static int rtl_write(struct usbd_class_data *const c_data,
 	}
 	case RTL_BLOCK_IIC:
 		if ((setup->wValue & 0xFFU) == R820T2_I2C_ADDR) {
+			(void)k_work_reschedule(&rtl_tuner_log_work, RTL_TUNER_LOG_DELAY);
 			return r820t2_i2c_write(src, len);
 		}
 
@@ -349,7 +369,7 @@ static struct net_buf *rtl_control_to_host(struct usbd_class_data *const c_data,
 		const uint8_t page = setup->wIndex & 0x0FU;
 		const uint8_t reg = setup->wValue >> 8;
 
-		if (page < RTL_DEMOD_PAGES && reg + len <= RTL_DEMOD_PAGE_SIZE) {
+		if (page < RTL2832U_DEMOD_PAGES && reg + len <= RTL2832U_DEMOD_PAGE_SIZE) {
 			memcpy(dst, &data->regs.demod[page][reg], len);
 		}
 		break;
@@ -376,6 +396,7 @@ static struct net_buf *rtl_control_to_host(struct usbd_class_data *const c_data,
 
 static int rtl_request(struct usbd_class_data *const c_data, struct net_buf *buf, int err)
 {
+	struct rtl_data *data = usbd_class_get_private(c_data);
 	struct udc_buf_info *bi = udc_get_buf_info(buf);
 
 	if (err != 0 && err != -ECONNABORTED) {
@@ -385,6 +406,7 @@ static int rtl_request(struct usbd_class_data *const c_data, struct net_buf *buf
 	net_buf_unref(buf);
 
 	if (err == 0) {
+		atomic_inc(&data->xfers);
 		rtl_stream_kick(c_data);
 	}
 
@@ -415,6 +437,7 @@ static int rtl_init(struct usbd_class_data *const c_data)
 
 	memset(&data->regs, 0, sizeof(data->regs));
 	atomic_clear(&data->state);
+	data->sample_rate = 0U;
 	r820t2_init();
 
 	return 0;
@@ -483,6 +506,88 @@ static struct rtl_data rtl_data = {
 	.fs_desc = rtl_fs_desc,
 	.hs_desc = rtl_hs_desc,
 };
+
+/* IF frequency in Hz; librtlsdr programs the negated IF */
+static uint32_t rtl_if_freq(const struct rtl_data *const data)
+{
+	const uint8_t *p = &data->regs.demod[RTL_DEMOD_IF_PAGE][RTL_DEMOD_IF_REG];
+	int32_t raw = (int32_t)(((uint32_t)(p[0] & 0x3FU) << 16) | ((uint32_t)p[1] << 8) | p[2]);
+	int64_t if_freq;
+
+	/* Sign-extend the 22-bit value */
+	if ((raw & BIT(21)) != 0) {
+		raw -= (int32_t)BIT(22);
+	}
+
+	/* IF = -raw * xtal / 2^22 */
+	if_freq = ((int64_t)-raw * (int64_t)RTL_XTAL_FREQ) / (int64_t)BIT64(22);
+
+	return (if_freq > 0) ? (uint32_t)if_freq : 0U;
+}
+
+void rtl2832u_get_status(struct rtl2832u_status *status)
+{
+	const struct rtl_data *data = &rtl_data;
+
+	status->configured = atomic_test_bit(&data->state, RTL_STATE_ENABLED);
+	status->streaming = atomic_test_bit(&data->state, RTL_STATE_RUNNING);
+	status->test_mode = (data->regs.demod[RTL_DEMOD_TEST_PAGE][RTL_DEMOD_TEST_REG] &
+			     RTL_DEMOD_TEST_BIT) != 0U;
+	status->sample_rate = data->sample_rate;
+	status->if_freq = rtl_if_freq(data);
+	status->lo_freq = r820t2_lo_freq();
+	status->xfers = (uint32_t)atomic_get(&data->xfers);
+
+	/* librtlsdr tunes the LO to the center frequency plus the IF */
+	if (status->lo_freq > status->if_freq) {
+		status->center_freq = status->lo_freq - status->if_freq;
+	} else {
+		status->center_freq = status->lo_freq;
+	}
+}
+
+const uint8_t *rtl2832u_demod_regs(uint8_t page)
+{
+	if (page >= RTL2832U_DEMOD_PAGES) {
+		return NULL;
+	}
+
+	return rtl_data.regs.demod[page];
+}
+
+/* Log tuner changes once the host has finished a sequence of register writes */
+static void rtl_tuner_log_handler(struct k_work *work)
+{
+	static uint32_t last_center;
+	static bool last_manual;
+	static int32_t last_gain = INT32_MIN;
+	struct rtl2832u_status status;
+	int32_t gain = 0;
+	bool manual;
+
+	ARG_UNUSED(work);
+
+	rtl2832u_get_status(&status);
+
+	if (status.lo_freq != 0U && status.center_freq != last_center) {
+		last_center = status.center_freq;
+		LOG_INF("Center frequency %u Hz (LO %u Hz, IF %u Hz)", status.center_freq,
+			status.lo_freq, status.if_freq);
+	}
+
+	manual = r820t2_manual_gain(&gain);
+	if (manual != last_manual || gain != last_gain) {
+		last_manual = manual;
+		last_gain = gain;
+
+		if (manual) {
+			/* The gain step sums are never negative */
+			LOG_INF("Tuner gain %d.%d dB", gain / 10, gain % 10);
+		} else {
+			LOG_INF("Tuner gain auto");
+		}
+	}
+}
 
 static const struct usbd_class_api rtl_api = {
 	.control_to_dev = rtl_control_to_dev,

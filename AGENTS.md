@@ -16,13 +16,17 @@ start with the SPDX header lines used in the existing files.
 - `modules/udc_wch_usbhs/`: out-of-tree Zephyr module with the UDC driver for the CH32V307 USBHS
   controller, the `wch,usbhs` binding and Kconfig. It is loaded through `ZEPHYR_EXTRA_MODULES` in
   `CMakeLists.txt`. The zephyr tree stays unmodified: keep it that way.
-- `boards/ch32v307v_evt_r1.overlay`: the USBHS node (`0x40023400`, IRQ 85, clock
-  `CH32V20X_V30X_CLOCK_USBHS`), labeled `zephyr_udc0`. The SoC dtsi has no USB node.
+- `boards/ch32v307v_evt_r1_ch32v307_ram_64k.overlay`: the USBHS node (`0x40023400`, IRQ 85,
+  clock `CH32V20X_V30X_CLOCK_USBHS`), labeled `zephyr_udc0`. The SoC dtsi has no USB node.
+  App board overlays only match the full qualified name (`zephyr_build_string()`), not the bare
+  board name: a build for another variant fails with `zephyr_udc0` undeclared.
 - `src/main.c`: USB device setup (VID/PID, strings, HS and FS configurations).
 - `src/rtl2832u.c`: vendor class with the librtlsdr control protocol and bulk IN streaming.
 - `src/r820t2.c`: emulated tuner register file. Replace its `r820t2_i2c_write()`/`_read()` to
   talk to a real R820T2.
 - `src/sample_src.c`: dummy sample source. This is the hook for the SDR signal path.
+- `src/welle_sdr_shell.c`: read-only `welle-sdr` shell commands, using the accessors in
+  `src/rtl2832u.h` and `src/r820t2.h`.
 
 ## Hardware and host setup
 
@@ -30,13 +34,16 @@ start with the SPDX header lines used in the existing files.
   WCH-Link debugger shows up as `/dev/ttyACM0`; its serial port carries the USART1 console at
   115200 baud.
 - `west` is only available after `source ~/src/zephyrproject/.venv/bin/activate`.
-- Build from the workspace root: `west build -b ch32v307v_evt_r1 apps/rtlsdr_emu -d
-  apps/rtlsdr_emu/build`, flash with `west flash -d apps/rtlsdr_emu/build` (runner minichlink).
+- Build from the workspace root: `west build -b ch32v307v_evt_r1/ch32v307/ram_64k
+  apps/rtlsdr_emu -d apps/rtlsdr_emu/build`, flash with `west flash -d apps/rtlsdr_emu/build`
+  (runner minichlink).
 - Console: `picocom -b 115200 /dev/ttyACM0` (exit with Ctrl-A Ctrl-X). Start it before
   flashing, because the boot log is printed right after reset. For non-interactive capture
   (scripts, agents), pyserial from the venv works too.
-- Default target: 32 KB SRAM, about 26 KB used. Larger buffers need
-  `ch32v307v_evt_r1/ch32v307/ram_64k` or a bigger variant (changes the flash/RAM split).
+- Target `ram_64k`: 64 KB SRAM, about 31 KB used with the shell. The variant must match the
+  SRAM_CODE_MODE option bits; `west flash` does not program them. Check with
+  `minichlink -r ob.bin option 16`: USER byte (offset 2) bits 7:6 = `10` is 256 KB flash /
+  64 KB RAM (FLASH_OBR `0x4002201C` bits 9:8 hold the same). The board here is set that way.
 
 ## Verifying on the host
 
@@ -80,6 +87,25 @@ start with the SPDX header lines used in the existing files.
   `PLL not locked`. Reg 4 holds VCO fine tune (bits 5:4) and the filter calibration code (bits
   3:0). Writes to addresses beyond the 32 registers must still ACK: librtlsdr writes reg 0x21.
 
+## Shell and logs
+
+- USART1 runs the Zephyr shell (prompt `welle-sdr:~$`), and logs go through the shell backend.
+  `welle-sdr status`, `welle-sdr tuner regs` (logical values, not bit-reversed) and
+  `welle-sdr demod <page> <reg> [len]` are read-only. `SHELL_CMD_REGISTER()` cannot register a
+  name with `-`, so the root entry is defined by hand in `welle_sdr_shell.c`.
+- Logged at INF: test mode, sample rate, streaming start/stop, and, debounced by 20 ms after
+  the last tuner or IF write, `Center frequency` and `Tuner gain` when they change. librtlsdr
+  programs the PLL with several separate I2C writes, so logging per write would show
+  intermediate values.
+- LO from the R820T2 registers: `mix_div = 2 << (reg 0x10 >> 5)`,
+  `Nint = 4 * (reg 0x14 & 0x3f) + (reg 0x14 >> 6) + 13`, `SDM = reg 0x16 << 8 | reg 0x15`,
+  `LO = 2 * 28.8 MHz * (Nint + SDM / 65536) / mix_div`. The center is LO minus the demod IF
+  (page 1 regs 0x19..0x1b, `-raw * 28.8 MHz / 2^22`). librtlsdr computes the fraction in kHz,
+  so the center is within about 1 kHz of the request. The installed librtlsdr uses an IF of
+  1.6 to 1.7 MHz depending on the sample rate, not 3.57 MHz, so do not hardcode the IF.
+- Gain is the sum of the librtlsdr LNA (reg 0x05) and mixer (reg 0x07) gain steps, manual when
+  reg 0x05 bit 4 is set. `rtlsdr_close()` puts the tuner in standby, which reads as auto gain.
+
 ## Zephyr USB stack details
 
 - librtlsdr hardcodes EP 0x81. The stack assigns the first free IN endpoint, so the RTL2832U
@@ -122,5 +148,4 @@ start with the SPDX header lines used in the existing files.
 - The stream is unpaced; `sample_src_set_rate()` receives the host's rate but ignores it.
 - The driver has not been tested with Linux `testusb` (loopback build) or with OUT endpoints
   other than EP0.
-- Later phases: decode the R820T2 PLL registers into a frequency and gain, use a real R820T2
-  over I2C, and replace the dummy sample source.
+- Later phases: use a real R820T2 over I2C and replace the dummy sample source.
