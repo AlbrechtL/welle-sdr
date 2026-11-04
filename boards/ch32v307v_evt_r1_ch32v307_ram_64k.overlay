@@ -7,6 +7,19 @@
 #include <zephyr/dt-bindings/clock/ch32v20x_30x-clocks.h>
 
 / {
+	/*
+	 * R820T2 tuner: SCL on PB10, SDA on PB11, bit-banged. The I2C2
+	 * controller on these pins is not used, see the README.
+	 */
+	r820t2_i2c: r820t2-i2c {
+		compatible = "gpio-i2c";
+		scl-gpios = <&gpiob 10 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		sda-gpios = <&gpiob 11 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		clock-frequency = <I2C_BITRATE_STANDARD>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
 	soc {
 		/* USBHS controller with built-in HS PHY on PB6 (DM) / PB7 (DP), connector P6 */
 		zephyr_udc0: usbhs: usbd@40023400 {

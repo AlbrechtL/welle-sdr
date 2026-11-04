@@ -429,7 +429,11 @@ static struct net_buf *rtl_control_to_host(struct usbd_class_data *const c_data,
 	}
 	case RTL_BLOCK_IIC:
 		if ((setup->wValue & 0xFFU) == R820T2_I2C_ADDR) {
-			(void)r820t2_i2c_read(dst, len);
+			if (r820t2_i2c_read(dst, len) != 0) {
+				/* The tuner did not answer: STALL like the real chip */
+				net_buf_unref(buf);
+				return NULL;
+			}
 
 			if (!atomic_test_and_set_bit(&data->state, RTL_STATE_TUNER_PROBED)) {
 				LOG_INF("R820T2 tuner probed by host");
@@ -498,7 +502,8 @@ static int rtl_init(struct usbd_class_data *const c_data)
 	memset(&data->regs, 0, sizeof(data->regs));
 	atomic_clear(&data->state);
 	data->sample_rate = 0U;
-	r820t2_init();
+	/* A missing tuner is logged; the host sees it as a NACK on its probe */
+	(void)r820t2_init();
 
 	return 0;
 }

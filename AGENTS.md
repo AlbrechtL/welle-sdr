@@ -6,10 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 # welle-sdr: notes for coding agents
 
 Zephyr firmware that makes a WCH CH32V307V-EVT-R1 enumerate as an RTL-SDR dongle (RTL2832U +
-R820T2, USB `0bda:2838`), so the stock librtlsdr tools work without a host driver. It streams
-dummy data for now; real SDR logic and a physical R820T2 come later. This file records what is
-not obvious from the code. Code follows Zephyr style (`zephyr/doc/contribute/style/`); new files
-start with the SPDX header lines used in the existing files.
+R820T2, USB `0bda:2838`), so the stock librtlsdr tools work without a host driver. Tuner
+requests go to a real R820T2 on a bit-banged I2C bus; the samples are still dummy data. This
+file records what is not obvious from the code. Code follows Zephyr style
+(`zephyr/doc/contribute/style/`); new files start with the SPDX header lines used in the
+existing files.
 
 ## Layout
 
@@ -22,10 +23,11 @@ start with the SPDX header lines used in the existing files.
   board name: a build for another variant fails with `zephyr_udc0` undeclared.
 - `src/main.c`: USB device setup (VID/PID, strings, HS and FS configurations).
 - `src/rtl2832u.c`: vendor class with the librtlsdr control protocol and bulk IN streaming.
-- `src/r820t2.c`: emulated tuner register file. Replace its `r820t2_i2c_write()`/`_read()` to
-  talk to a real R820T2.
+- `src/r820t2.c`: R820T2 on I2C. Forwards host reads and writes to the chip and keeps a register
+  shadow (regs 0 to 4 as last read, 5 to 31 as last written) for the shell and the LO/gain
+  logs. Also the wiring checks, the bus scan and the standalone tune for the shell test.
 - `src/sample_src.c`: dummy sample source. This is the hook for the SDR signal path.
-- `src/welle_sdr_shell.c`: read-only `welle-sdr` shell commands, using the accessors in
+- `src/welle_sdr_shell.c`: `welle-sdr` shell commands, using the accessors in
   `src/rtl2832u.h` and `src/r820t2.h`.
 - `src/status_led.c`: USB state on `led0`, polled every 50 ms from `rtl2832u_get_status()` and
   `usbd_is_suspended()`. Off while not configured or suspended (an unplug reads as a suspend),
@@ -37,6 +39,8 @@ start with the SPDX header lines used in the existing files.
 - USB data goes over USBHS connector P6 (PB6 DM, PB7 DP, built-in HS PHY, no pinctrl). The
   WCH-Link debugger shows up as `/dev/ttyACM0`; its serial port carries the USART1 console at
   115200 baud.
+- R820T2: SCL on PB10, SDA on PB11, GND, 3.3 V, external pull-ups to 3.3 V, 28.8 MHz crystal
+  on the tuner side. 7-bit address 0x1a.
 - The board LEDs are not routed to the SoC. The status LED needs a jumper wire from J3 LED1
   to PD0 (active low). The board dtsi disables the `leds` node; the app overlay enables it.
 - `west` is only available after `source ~/src/zephyrproject/.venv/bin/activate`.
@@ -95,12 +99,51 @@ start with the SPDX header lines used in the existing files.
   0x69 (chip ID check). Reg 2 bit 6 (logical) means PLL locked, otherwise librtlsdr prints
   `PLL not locked`. Reg 4 holds VCO fine tune (bits 5:4) and the filter calibration code (bits
   3:0). Writes to addresses beyond the 32 registers must still ACK: librtlsdr writes reg 0x21.
+  Any tuner bus error is passed on as a STALL, so a missing tuner reads as `No supported tuner
+  found`, as on a real dongle.
+
+## Tuner I2C
+
+- The bus is Zephyr's `gpio-i2c` bit-bang driver on PB10/PB11 (node `r820t2_i2c`), 100 kHz.
+  The I2C2 controller on the same pins is not used: with the in-tree `i2c_wch.c` the firmware
+  hung within a few `rtl_sdr` runs. Details in the README ("Tuner I2C is bit-banged"):
+  `CTLR2.FREQ` overflow at the 144 MHz APB1 clock, a race in reads of 3 or more bytes that
+  leaves SCL held low, and `wch_i2c_finish_transfer()` spinning on `STAR2.BUSY` without a
+  timeout. A thread spinning there at a higher priority starves the shell, so the board looks
+  dead; attach with `minichlink -A -G` (halt without reset) and GDB on port 3333 to see it.
+- Before each transfer `bus_guard()` checks the pull-ups (re-checked until they are found) and
+  that both lines are high. Pull-up check: input with the internal pull-down, a line stays high
+  only with an external pull-up; then the pins go back to open-drain output high.
+- PLL lock: after a host write to regs 0x14..0x16, the next host read polls until reg 2 bit 6 is
+  set, at most `R820T2_LOCK_POLLS` reads (at least 5 ms). librtlsdr checks lock with that read,
+  and without the wait it reads before the PLL has locked (up to about 3.5 ms measured). The
+  polls are counted, not timed: `sys_clock_cycle_get_32()` in `wch_systick_ch32v00x.c` can jump
+  back by up to one 10 ms tick (CNT reloads before the ISR adds the tick), so cycle-based loops
+  such as `k_busy_wait()` and the bit-bang delays can end early. Sleeps last a whole 10 ms tick
+  (`CONFIG_SYS_CLOCK_TICKS_PER_SEC=100`), so the poll uses `k_busy_wait()`.
+- librtlsdr programs the PLL four times per open: power-on values (0x14 = 0x0f, lock not
+  checked), filter calibration at 56 MHz (0x14 = 0x84), the IF alone with center frequency 0
+  (0x10 = 0x04, 0x14 = 0x7e, outside the VCO range, locks only by chance: this is the
+  `PLL not locked!` message), then the requested frequency.
+- `CONFIG_I2C_SHELL` is enabled; its device name is `r820t2-i2c`. Its commands bypass
+  `bus_guard()` and `tuner_lock`: do not use them while a host tool runs.
+- `tuner_lock` serializes bus access between the usbd thread (host requests) and the shell.
+  Shadow readers do not lock.
+- The standalone power-on register set (`init_regs`) is the commonly published one (as in
+  librtlsdr and the Linux driver); it has not been checked against the Rafael datasheet. With it
+  the standalone tune locked from 28 to 1700 MHz.
 
 ## Shell and logs
 
 - USART1 runs the Zephyr shell (prompt `welle-sdr:~$`), and logs go through the shell backend.
-  `welle-sdr status`, `welle-sdr tuner regs` (logical values, not bit-reversed) and
-  `welle-sdr demod <page> <reg> [len]` are read-only. `SHELL_CMD_REGISTER()` cannot register a
+  `welle-sdr status`, `welle-sdr tuner regs [live]` (hex dump and decoded fields of the shadow
+  or of a chip read, logical values, not bit-reversed) and `welle-sdr demod <page> <reg> [len]`
+  are read-only. Field decoding is `r820t2_decode()` in `r820t2.c`, shared with the LO and gain
+  values in status and logs. It decodes only fields whose meaning librtlsdr's register use
+  confirms; registers 0x0a/0x0b (filter bandwidth), reg 3 and the standby bits are not decoded.
+  `welle-sdr tuner test` reads the chip: wiring report, scan, chip ID, a hint on failure.
+  `welle-sdr tuner test <lo_hz>` writes the tuner and returns -EBUSY while the host has the
+  device open (`DEMOD_CTL` power on). `SHELL_CMD_REGISTER()` cannot register a
   name with `-`, so the root entry is defined by hand in `welle_sdr_shell.c`.
 - Logged at INF: test mode, sample rate, streaming start/stop, and, debounced by 20 ms after
   the last tuner or IF write, `Center frequency` and `Tuner gain` when they change. librtlsdr
@@ -167,4 +210,4 @@ start with the SPDX header lines used in the existing files.
 - The stream is unpaced; `sample_src_set_rate()` receives the host's rate but ignores it.
 - The driver has not been tested with Linux `testusb` (loopback build) or with OUT endpoints
   other than EP0.
-- Later phases: use a real R820T2 over I2C and replace the dummy sample source.
+- Later phases: replace the dummy sample source (the R820T2 IF output is not sampled).
