@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef RTLSDR_EMU_R820T2_H_
-#define RTLSDR_EMU_R820T2_H_
+#ifndef WELLE_SDR_R820T2_H_
+#define WELLE_SDR_R820T2_H_
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -70,4 +70,4 @@ uint32_t r820t2_lo_freq(void);
  */
 bool r820t2_manual_gain(int32_t *gain_tenth_db);
 
-#endif /* RTLSDR_EMU_R820T2_H_ */
+#endif /* WELLE_SDR_R820T2_H_ */

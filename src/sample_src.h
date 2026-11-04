@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef RTLSDR_EMU_SAMPLE_SRC_H_
-#define RTLSDR_EMU_SAMPLE_SRC_H_
+#ifndef WELLE_SDR_SAMPLE_SRC_H_
+#define WELLE_SDR_SAMPLE_SRC_H_
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -26,4 +26,4 @@ void sample_src_set_rate(uint32_t rate);
 /** Fill @p buf with the next @p len bytes of the stream. */
 void sample_src_fill(uint8_t *buf, size_t len);
 
-#endif /* RTLSDR_EMU_SAMPLE_SRC_H_ */
+#endif /* WELLE_SDR_SAMPLE_SRC_H_ */

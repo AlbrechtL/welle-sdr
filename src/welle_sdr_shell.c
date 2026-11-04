@@ -40,7 +40,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	shell_print(sh, "Streamed:     %u transfers, %llu bytes", status.xfers,
-		    (unsigned long long)status.xfers * CONFIG_RTLSDR_EMU_XFER_SIZE);
+		    (unsigned long long)status.xfers * CONFIG_WELLE_SDR_XFER_SIZE);
 
 	return 0;
 }

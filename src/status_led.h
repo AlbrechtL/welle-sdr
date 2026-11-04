@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef RTLSDR_EMU_STATUS_LED_H_
-#define RTLSDR_EMU_STATUS_LED_H_
+#ifndef WELLE_SDR_STATUS_LED_H_
+#define WELLE_SDR_STATUS_LED_H_
 
 #include <zephyr/usb/usbd.h>
 
@@ -24,4 +24,4 @@
  */
 int status_led_init(struct usbd_context *ctx);
 
-#endif /* RTLSDR_EMU_STATUS_LED_H_ */
+#endif /* WELLE_SDR_STATUS_LED_H_ */

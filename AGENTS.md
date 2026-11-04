@@ -3,7 +3,7 @@ Copyright The Zephyr Project Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# rtlsdr_emu: notes for coding agents
+# welle-sdr: notes for coding agents
 
 Zephyr firmware that makes a WCH CH32V307V-EVT-R1 enumerate as an RTL-SDR dongle (RTL2832U +
 R820T2, USB `0bda:2838`), so the stock librtlsdr tools work without a host driver. It streams
@@ -41,7 +41,7 @@ start with the SPDX header lines used in the existing files.
   to PD0 (active low). The board dtsi disables the `leds` node; the app overlay enables it.
 - `west` is only available after `source ~/src/zephyrproject/.venv/bin/activate`.
 - Build from the workspace root: `west build -b ch32v307v_evt_r1/ch32v307/ram_64k
-  apps/rtlsdr_emu -d apps/rtlsdr_emu/build`, flash with `west flash -d apps/rtlsdr_emu/build`
+  apps/welle-sdr -d apps/welle-sdr/build`, flash with `west flash -d apps/welle-sdr/build`
   (runner minichlink).
 - Console: `picocom -b 115200 /dev/ttyACM0` (exit with Ctrl-A Ctrl-X). Start it before
   flashing, because the boot log is printed right after reset. For non-interactive capture
@@ -134,7 +134,7 @@ start with the SPDX header lines used in the existing files.
 - `control_to_dev` is called twice for writes with data: first with `buf == NULL` (accept or
   reject), then with the received data.
 - Bulk IN buffers come from a header-only `UDC_BUF_POOL_DEFINE` pool with
-  `CONFIG_RTLSDR_EMU_XFER_SIZE` data each. The size must be a multiple of 512: a short packet
+  `CONFIG_WELLE_SDR_XFER_SIZE` data each. The size must be a multiple of 512: a short packet
   ends the host's bulk transfer.
 - `usbd_ep_dequeue()` on an enabled endpoint logs `ep 0x81 is not halted|disabled` at INF, but
   still cancels the queue. That is how the FIFO flush works.

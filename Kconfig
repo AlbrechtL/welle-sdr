@@ -3,7 +3,7 @@
 
 mainmenu "RTL-SDR emulator"
 
-config RTLSDR_EMU_XFER_SIZE
+config WELLE_SDR_XFER_SIZE
 	int "Bulk IN transfer buffer size"
 	default 4096
 	help
@@ -11,7 +11,7 @@ config RTLSDR_EMU_XFER_SIZE
 	  that the stream contains no short packets, which would end the
 	  host's bulk transfer early.
 
-config RTLSDR_EMU_XFER_COUNT
+config WELLE_SDR_XFER_COUNT
 	int "Number of bulk IN transfer buffers"
 	default 2
 	range 2 8

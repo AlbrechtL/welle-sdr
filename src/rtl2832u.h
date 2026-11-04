@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef RTLSDR_EMU_RTL2832U_H_
-#define RTLSDR_EMU_RTL2832U_H_
+#ifndef WELLE_SDR_RTL2832U_H_
+#define WELLE_SDR_RTL2832U_H_
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -52,4 +52,4 @@ void rtl2832u_get_status(struct rtl2832u_status *status);
  */
 const uint8_t *rtl2832u_demod_regs(uint8_t page);
 
-#endif /* RTLSDR_EMU_RTL2832U_H_ */
+#endif /* WELLE_SDR_RTL2832U_H_ */

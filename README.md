@@ -3,7 +3,7 @@ Copyright The Zephyr Project Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# rtlsdr_emu
+# welle-sdr
 
 Zephyr firmware that makes a WCH CH32V307V-EVT-R1 enumerate as an RTL-SDR dongle
 (RTL2832U with an R820T2 tuner, USB `0bda:2838`) on the USBHS connector P6. The
@@ -15,7 +15,7 @@ The USBHS device controller driver is an out-of-tree module in
 `modules/udc_wch_usbhs`.
 
 ```
-west build -b ch32v307v_evt_r1/ch32v307/ram_64k apps/rtlsdr_emu
+west build -b ch32v307v_evt_r1/ch32v307/ram_64k apps/welle-sdr
 west flash
 rtl_test
 ```

@@ -93,7 +93,7 @@ enum rtl_block {
 #define RTL_FS_BULK_MPS 64U
 #define RTL_HS_BULK_MPS 512U
 
-BUILD_ASSERT(CONFIG_RTLSDR_EMU_XFER_SIZE % RTL_HS_BULK_MPS == 0,
+BUILD_ASSERT(CONFIG_WELLE_SDR_XFER_SIZE % RTL_HS_BULK_MPS == 0,
 	     "Transfer size must be a multiple of 512 to avoid short packets");
 
 /* Streaming state bits */
@@ -106,7 +106,7 @@ BUILD_ASSERT(CONFIG_RTLSDR_EMU_XFER_SIZE % RTL_HS_BULK_MPS == 0,
 /* The host has read the tuner since the demodulator was powered on */
 #define RTL_STATE_TUNER_PROBED 4
 
-UDC_BUF_POOL_DEFINE(rtl_ep_pool, CONFIG_RTLSDR_EMU_XFER_COUNT, CONFIG_RTLSDR_EMU_XFER_SIZE,
+UDC_BUF_POOL_DEFINE(rtl_ep_pool, CONFIG_WELLE_SDR_XFER_COUNT, CONFIG_WELLE_SDR_XFER_SIZE,
 		    sizeof(struct udc_buf_info), NULL);
 
 struct rtl_regs {
@@ -167,8 +167,8 @@ static void rtl_stream_kick(struct usbd_class_data *const c_data)
 			return;
 		}
 
-		sample_src_fill(net_buf_add(buf, CONFIG_RTLSDR_EMU_XFER_SIZE),
-				CONFIG_RTLSDR_EMU_XFER_SIZE);
+		sample_src_fill(net_buf_add(buf, CONFIG_WELLE_SDR_XFER_SIZE),
+				CONFIG_WELLE_SDR_XFER_SIZE);
 
 		bi = udc_get_buf_info(buf);
 		bi->ep = ep;

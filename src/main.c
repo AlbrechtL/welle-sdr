@@ -11,7 +11,7 @@
 
 #include "status_led.h"
 
-LOG_MODULE_REGISTER(rtlsdr_emu, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(welle_sdr, LOG_LEVEL_INF);
 
 /* Generic RTL2832U OEM dongle, as listed in librtlsdr known_devices */
 #define RTL_USB_VID 0x0bda
