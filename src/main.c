@@ -25,7 +25,7 @@ USBD_DEVICE_DEFINE(rtl_usbd, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)), RTL_USB_V
 USBD_DESC_LANG_DEFINE(rtl_lang);
 /* librtlsdr matches VID/PID only, the strings tell users what they are talking to */
 USBD_DESC_MANUFACTURER_DEFINE(rtl_mfr, "Zephyr CH32V307");
-USBD_DESC_PRODUCT_DEFINE(rtl_product, "RTL-SDR compatible (RTL2832U/R820T2 emulation)");
+USBD_DESC_PRODUCT_DEFINE(rtl_product, "welle-sdr (RTL2832U/R820T2 emulation)");
 USBD_DESC_STRING_DEFINE(rtl_sn, "00000001", USBD_DUT_STRING_SERIAL_NUMBER);
 
 USBD_CONFIGURATION_DEFINE(rtl_fs_config, 0, RTL_USB_MAX_POWER, NULL);
