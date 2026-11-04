@@ -26,6 +26,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 
 	shell_print(sh, "USB:          %s, %s", status.configured ? "configured" : "not configured",
 		    status.streaming ? "streaming" : "idle");
+	shell_print(sh, "Host driver:  %s", status.host_open ? "open" : "closed");
 	shell_print(sh, "Output:       %s", status.test_mode ? "test counter" : "I/Q tone");
 	shell_print(sh, "Sample rate:  %u S/s", status.sample_rate);
 	shell_print(sh, "Center freq:  %u Hz", status.center_freq);

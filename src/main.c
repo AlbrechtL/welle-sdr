@@ -28,6 +28,63 @@ USBD_DESC_STRING_DEFINE(rtl_sn, "00000001", USBD_DUT_STRING_SERIAL_NUMBER);
 USBD_CONFIGURATION_DEFINE(rtl_fs_config, 0, RTL_USB_MAX_POWER, NULL);
 USBD_CONFIGURATION_DEFINE(rtl_hs_config, 0, RTL_USB_MAX_POWER, NULL);
 
+/*
+ * The USBHS controller cannot detect VBUS: the first bus reset after boot or
+ * after a suspend is reported as a connection, and a removed cable looks like
+ * a suspend. The idle bus before the first reset also reads as suspended.
+ */
+static void rtl_usbd_msg_cb(struct usbd_context *const ctx, const struct usbd_msg *const msg)
+{
+	static bool host_seen;
+	static bool new_session = true;
+	const char *speed;
+
+	switch (msg->type) {
+	case USBD_MSG_RESET:
+		speed = (usbd_bus_speed(ctx) == USBD_SPEED_HS) ? "high" : "full";
+
+		if (new_session) {
+			LOG_INF("USB host connected (%s speed)", speed);
+		} else {
+			LOG_INF("USB bus reset (%s speed)", speed);
+		}
+
+		new_session = false;
+		host_seen = true;
+		break;
+	case USBD_MSG_CONFIGURATION:
+		if (msg->status != 0) {
+			LOG_INF("Configured by host (configuration %d)", msg->status);
+		} else {
+			LOG_INF("Deconfigured by host");
+		}
+		break;
+	case USBD_MSG_SUSPEND:
+		new_session = true;
+
+		if (host_seen) {
+			LOG_INF("USB suspended (cable removed or host idle)");
+		} else {
+			LOG_DBG("USB bus idle before first reset");
+		}
+		break;
+	case USBD_MSG_RESUME:
+		if (host_seen) {
+			LOG_INF("USB resumed");
+		} else {
+			LOG_DBG("USB bus active");
+		}
+		break;
+	case USBD_MSG_UDC_ERROR:
+	case USBD_MSG_STACK_ERROR:
+		LOG_ERR("%s (%d)", usbd_msg_type_string(msg->type), msg->status);
+		break;
+	default:
+		LOG_DBG("%s", usbd_msg_type_string(msg->type));
+		break;
+	}
+}
+
 static int rtl_add_configuration(const enum usbd_speed speed, struct usbd_config_node *const cfg)
 {
 	int err;
@@ -74,6 +131,12 @@ static int rtl_usbd_init(void)
 
 	err = usbd_device_set_bcd_device(&rtl_usbd, 0x0100);
 	if (err != 0) {
+		return err;
+	}
+
+	err = usbd_msg_register_cb(&rtl_usbd, rtl_usbd_msg_cb);
+	if (err != 0) {
+		LOG_ERR("Failed to register message callback (%d)", err);
 		return err;
 	}
 

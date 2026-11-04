@@ -19,6 +19,8 @@ struct rtl2832u_status {
 	bool configured;
 	/** The host has started streaming (USB_EPA_CTL is 0). */
 	bool streaming;
+	/** A host driver has opened the device (demodulator powered on). */
+	bool host_open;
 	/** Counter test output selected. */
 	bool test_mode;
 	/** Sample rate set by the host in S/s, 0 if not set yet. */

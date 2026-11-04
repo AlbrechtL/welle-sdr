@@ -77,6 +77,9 @@ start with the SPDX header lines used in the existing files.
   - Page 1 regs 0x19..0x1b: IF frequency.
 - USB block `USB_EPA_CTL` (0x2148): `0x1002` stops and flushes the FIFO, `0x0000` runs. Streaming
   only runs while it is 0.
+- SYS block `DEMOD_CTL` (0x3000): librtlsdr writes `0xe8` (demod, PLL and ADCs on) in
+  `rtlsdr_open()` and `0x20` in `rtlsdr_close()`. This is the only sign of a close: librtlsdr
+  does not write `USB_EPA_CTL` then, so power-off also stops the stream.
 - IIC: `wValue` is the 8-bit I2C address. A NACK must be a STALL (`to_host` returns NULL,
   `to_dev` returns an error).
   - 0x20 (the demodulator itself) always ACKs. The kernel driver identifies RTL2832U against
@@ -97,6 +100,16 @@ start with the SPDX header lines used in the existing files.
   the last tuner or IF write, `Center frequency` and `Tuner gain` when they change. librtlsdr
   programs the PLL with several separate I2C writes, so logging per write would show
   intermediate values.
+- USB events are logged from the `usbd_msg` callback in `main.c`: `USB host connected` (first
+  bus reset after boot or after a suspend), `USB bus reset`, `Configured by host`,
+  `USB suspended`, `USB resumed`. The USBHS controller has no VBUS detection: an unplug reads
+  as `USB suspended (cable removed or host idle)`, and the idle bus before the first reset is
+  a suspend that is only logged at DBG.
+- Host driver milestones are logged from `rtl2832u.c`: the first vendor request after
+  configuration, demod power on/off (`DEMOD_CTL`, librtlsdr open/close) and the first R820T2
+  read after power-on. Right after enumeration, before any user tool runs, the host opens and
+  closes the device once (probably `dvb_usb_rtl28xxu`): `Streaming started`, then a stop with
+  0 transfers.
 - LO from the R820T2 registers: `mix_div = 2 << (reg 0x10 >> 5)`,
   `Nint = 4 * (reg 0x14 & 0x3f) + (reg 0x14 >> 6) + 13`, `SDM = reg 0x16 << 8 | reg 0x15`,
   `LO = 2 * 28.8 MHz * (Nint + SDM / 65536) / mix_div`. The center is LO minus the demod IF

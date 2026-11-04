@@ -52,6 +52,13 @@ enum rtl_block {
 /* USB_EPA_CTL, written big-endian: 0x1002 stalls and flushes the FIFO */
 #define RTL_USB_EPA_CTL 0x2148U
 
+/*
+ * DEMOD_CTL: librtlsdr writes 0xe8 when it opens the device (demodulator,
+ * PLL and ADCs on) and 0x20 when it closes it.
+ */
+#define RTL_SYS_DEMOD_CTL        0x3000U
+#define RTL_DEMOD_CTL_POWER_MASK 0xC8U
+
 /* Demod page 0 reg 0x19: 0x03 selects the counter test output, 0x05 normal */
 #define RTL_DEMOD_TEST_PAGE 0U
 #define RTL_DEMOD_TEST_REG  0x19U
@@ -90,8 +97,14 @@ BUILD_ASSERT(CONFIG_RTLSDR_EMU_XFER_SIZE % RTL_HS_BULK_MPS == 0,
 	     "Transfer size must be a multiple of 512 to avoid short packets");
 
 /* Streaming state bits */
-#define RTL_STATE_ENABLED 0
-#define RTL_STATE_RUNNING 1
+#define RTL_STATE_ENABLED      0
+#define RTL_STATE_RUNNING      1
+/* A host driver has sent a vendor request since the configuration was enabled */
+#define RTL_STATE_HOST         2
+/* The host has powered on the demodulator */
+#define RTL_STATE_DEMOD_ON     3
+/* The host has read the tuner since the demodulator was powered on */
+#define RTL_STATE_TUNER_PROBED 4
 
 UDC_BUF_POOL_DEFINE(rtl_ep_pool, CONFIG_RTLSDR_EMU_XFER_COUNT, CONFIG_RTLSDR_EMU_XFER_SIZE,
 		    sizeof(struct udc_buf_info), NULL);
@@ -117,6 +130,8 @@ struct rtl_data {
 	atomic_t state;
 	/* Completed bulk IN transfers */
 	atomic_t xfers;
+	/* Value of xfers when streaming started */
+	uint32_t stream_start_xfers;
 	uint32_t sample_rate;
 };
 
@@ -173,6 +188,7 @@ static void rtl_stream_set_running(struct usbd_class_data *const c_data, const b
 
 	if (running) {
 		if (!atomic_test_and_set_bit(&data->state, RTL_STATE_RUNNING)) {
+			data->stream_start_xfers = (uint32_t)atomic_get(&data->xfers);
 			LOG_INF("Streaming started");
 			rtl_stream_kick(c_data);
 		}
@@ -181,7 +197,8 @@ static void rtl_stream_set_running(struct usbd_class_data *const c_data, const b
 	}
 
 	if (atomic_test_and_clear_bit(&data->state, RTL_STATE_RUNNING)) {
-		LOG_INF("Streaming stopped, FIFO flushed");
+		LOG_INF("Streaming stopped after %u transfers, FIFO flushed",
+			(uint32_t)atomic_get(&data->xfers) - data->stream_start_xfers);
 
 		if (atomic_test_bit(&data->state, RTL_STATE_ENABLED)) {
 			(void)usbd_ep_dequeue(usbd_class_get_ctx(c_data), rtl_get_bulk_in(c_data));
@@ -259,6 +276,34 @@ static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_
 	}
 }
 
+static void rtl_demod_power(struct usbd_class_data *const c_data, const bool on)
+{
+	struct rtl_data *data = usbd_class_get_private(c_data);
+
+	if (on) {
+		if (!atomic_test_and_set_bit(&data->state, RTL_STATE_DEMOD_ON)) {
+			LOG_INF("Demodulator powered on (host driver opened)");
+		}
+
+		return;
+	}
+
+	if (atomic_test_and_clear_bit(&data->state, RTL_STATE_DEMOD_ON)) {
+		atomic_clear_bit(&data->state, RTL_STATE_TUNER_PROBED);
+		LOG_INF("Demodulator powered off (host driver closed)");
+		/* librtlsdr does not stop the FIFO on close, no samples without a demodulator */
+		rtl_stream_set_running(c_data, false);
+	}
+}
+
+/* Log the first vendor request of a host driver after configuration */
+static void rtl_host_seen(struct rtl_data *const data)
+{
+	if (!atomic_test_and_set_bit(&data->state, RTL_STATE_HOST)) {
+		LOG_INF("Host driver started vendor requests");
+	}
+}
+
 static int rtl_write(struct usbd_class_data *const c_data,
 		     const struct usb_setup_packet *const setup, const uint8_t *const src,
 		     const uint16_t len)
@@ -298,6 +343,10 @@ static int rtl_write(struct usbd_class_data *const c_data,
 			rtl_stream_set_running(c_data, sys_get_be16(src) == 0U);
 		}
 
+		if (block == RTL_BLOCK_SYS && setup->wValue == RTL_SYS_DEMOD_CTL && len == 1U) {
+			rtl_demod_power(c_data, (src[0] & RTL_DEMOD_CTL_POWER_MASK) != 0U);
+		}
+
 		return 0;
 	default:
 		/* Accept and discard writes to the other blocks */
@@ -314,6 +363,8 @@ static int rtl_control_to_dev(struct usbd_class_data *const c_data,
 	if (setup->RequestType.type != USB_REQTYPE_TYPE_VENDOR) {
 		return -ENOTSUP;
 	}
+
+	rtl_host_seen(data);
 
 	if (RTL_CTRL_BLOCK(setup->wIndex) == RTL_BLOCK_IIC &&
 	    !rtl_i2c_addr_acked(data, setup->wValue & 0xFFU)) {
@@ -352,6 +403,8 @@ static struct net_buf *rtl_control_to_host(struct usbd_class_data *const c_data,
 		return NULL;
 	}
 
+	rtl_host_seen(data);
+
 	if (block == RTL_BLOCK_IIC && !rtl_i2c_addr_acked(data, setup->wValue & 0xFFU)) {
 		return NULL;
 	}
@@ -377,6 +430,10 @@ static struct net_buf *rtl_control_to_host(struct usbd_class_data *const c_data,
 	case RTL_BLOCK_IIC:
 		if ((setup->wValue & 0xFFU) == R820T2_I2C_ADDR) {
 			(void)r820t2_i2c_read(dst, len);
+
+			if (!atomic_test_and_set_bit(&data->state, RTL_STATE_TUNER_PROBED)) {
+				LOG_INF("R820T2 tuner probed by host");
+			}
 		}
 		break;
 	case RTL_BLOCK_USB:
@@ -418,7 +475,7 @@ static void rtl_enable(struct usbd_class_data *const c_data)
 	struct rtl_data *data = usbd_class_get_private(c_data);
 
 	if (!atomic_test_and_set_bit(&data->state, RTL_STATE_ENABLED)) {
-		LOG_INF("Configuration enabled");
+		LOG_DBG("Configuration enabled");
 		rtl_stream_kick(c_data);
 	}
 }
@@ -428,7 +485,10 @@ static void rtl_disable(struct usbd_class_data *const c_data)
 	struct rtl_data *data = usbd_class_get_private(c_data);
 
 	atomic_clear_bit(&data->state, RTL_STATE_ENABLED);
-	LOG_INF("Configuration disabled");
+	atomic_clear_bit(&data->state, RTL_STATE_HOST);
+	atomic_clear_bit(&data->state, RTL_STATE_DEMOD_ON);
+	atomic_clear_bit(&data->state, RTL_STATE_TUNER_PROBED);
+	LOG_DBG("Configuration disabled");
 }
 
 static int rtl_init(struct usbd_class_data *const c_data)
@@ -531,6 +591,7 @@ void rtl2832u_get_status(struct rtl2832u_status *status)
 
 	status->configured = atomic_test_bit(&data->state, RTL_STATE_ENABLED);
 	status->streaming = atomic_test_bit(&data->state, RTL_STATE_RUNNING);
+	status->host_open = atomic_test_bit(&data->state, RTL_STATE_DEMOD_ON);
 	status->test_mode = (data->regs.demod[RTL_DEMOD_TEST_PAGE][RTL_DEMOD_TEST_REG] &
 			     RTL_DEMOD_TEST_BIT) != 0U;
 	status->sample_rate = data->sample_rate;
