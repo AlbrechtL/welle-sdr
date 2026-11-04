@@ -26,6 +26,7 @@
 #include "r820t2.h"
 #include "rtl2832u.h"
 #include "sample_src.h"
+#include "si_fmt.h"
 
 LOG_MODULE_REGISTER(rtl2832u, LOG_LEVEL_INF);
 
@@ -263,10 +264,11 @@ static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_
 		/* librtlsdr writes the high half first, wait for the low half */
 		if (ratio != 0U && reg + len > RTL_DEMOD_RSAMP_REG + 2U) {
 			const uint32_t rate = (uint32_t)((RTL_XTAL_FREQ << 22) / ratio);
+			char buf[SI_FMT_LEN];
 
 			data->sample_rate = rate;
 			sample_src_set_rate(rate);
-			LOG_INF("Sample rate %u S/s", rate);
+			LOG_INF("Sample rate %s", si_fmt(buf, sizeof(buf), rate, "S/s"));
 		}
 	}
 
@@ -636,9 +638,15 @@ static void rtl_tuner_log_handler(struct k_work *work)
 	rtl2832u_get_status(&status);
 
 	if (status.lo_freq != 0U && status.center_freq != last_center) {
+		char center[SI_FMT_LEN];
+		char lo[SI_FMT_LEN];
+		char if_freq[SI_FMT_LEN];
+
 		last_center = status.center_freq;
-		LOG_INF("Center frequency %u Hz (LO %u Hz, IF %u Hz)", status.center_freq,
-			status.lo_freq, status.if_freq);
+		LOG_INF("Center frequency %s (LO %s, IF %s)",
+			si_fmt(center, sizeof(center), status.center_freq, "Hz"),
+			si_fmt(lo, sizeof(lo), status.lo_freq, "Hz"),
+			si_fmt(if_freq, sizeof(if_freq), status.if_freq, "Hz"));
 	}
 
 	manual = r820t2_manual_gain(&gain);

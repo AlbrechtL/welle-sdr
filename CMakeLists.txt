@@ -13,6 +13,7 @@ target_sources(app PRIVATE
   src/rtl2832u.c
   src/r820t2.c
   src/sample_src.c
+  src/si_fmt.c
   src/status_led.c
   src/welle_sdr_shell.c
 )

@@ -15,6 +15,7 @@
 
 #include "r820t2.h"
 #include "rtl2832u.h"
+#include "si_fmt.h"
 
 /* Nominal VCO fine tune value, register 4 bits 5:4 */
 #define TUNER_VCO_FINE_NOMINAL 2U
@@ -22,6 +23,7 @@
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
 	struct rtl2832u_status status;
+	char buf[SI_FMT_LEN];
 	int32_t gain;
 
 	ARG_UNUSED(argc);
@@ -33,10 +35,10 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 		    status.streaming ? "streaming" : "idle");
 	shell_print(sh, "Host driver:  %s", status.host_open ? "open" : "closed");
 	shell_print(sh, "Output:       %s", status.test_mode ? "test counter" : "I/Q tone");
-	shell_print(sh, "Sample rate:  %u S/s", status.sample_rate);
-	shell_print(sh, "Center freq:  %u Hz", status.center_freq);
-	shell_print(sh, "Tuner LO:     %u Hz", status.lo_freq);
-	shell_print(sh, "IF:           %u Hz", status.if_freq);
+	shell_print(sh, "Sample rate:  %s", si_fmt(buf, sizeof(buf), status.sample_rate, "S/s"));
+	shell_print(sh, "Center freq:  %s", si_fmt(buf, sizeof(buf), status.center_freq, "Hz"));
+	shell_print(sh, "Tuner LO:     %s", si_fmt(buf, sizeof(buf), status.lo_freq, "Hz"));
+	shell_print(sh, "IF:           %s", si_fmt(buf, sizeof(buf), status.if_freq, "Hz"));
 
 	if (r820t2_manual_gain(&gain)) {
 		shell_print(sh, "Tuner gain:   %d.%d dB", gain / 10, gain % 10);
@@ -77,6 +79,7 @@ static const char *autotune_str(uint8_t autotune)
 /* Decoded fields of a register file in logical (not bit-reversed) values */
 static void print_fields(const struct shell *sh, const uint8_t *regs, bool pll_programmed)
 {
+	char buf[SI_FMT_LEN];
 	struct r820t2_fields f;
 
 	r820t2_decode(regs, &f);
@@ -103,8 +106,9 @@ static void print_fields(const struct shell *sh, const uint8_t *regs, bool pll_p
 		    f.sdm_on ? "on" : "off", f.refdiv2 ? "14.4 MHz" : "28.8 MHz");
 	shell_print(sh, "VCO current:  %u", f.vco_cur);
 	shell_print(sh, "Autotune:     %s", autotune_str(f.autotune));
-	shell_print(sh, "VCO:          %llu Hz", (unsigned long long)f.vco_hz);
-	shell_print(sh, "LO:           %u Hz (VCO / %u)", f.lo_hz, f.mix_div);
+	shell_print(sh, "VCO:          %s", si_fmt(buf, sizeof(buf), f.vco_hz, "Hz"));
+	shell_print(sh, "LO:           %s (VCO / %u)", si_fmt(buf, sizeof(buf), f.lo_hz, "Hz"),
+		    f.mix_div);
 }
 
 static int cmd_tuner_regs(const struct shell *sh, size_t argc, char **argv)
@@ -241,6 +245,7 @@ static int tuner_report(const struct shell *sh, bool dump)
 
 static int cmd_tuner_test(const struct shell *sh, size_t argc, char **argv)
 {
+	char buf[SI_FMT_LEN];
 	struct r820t2_fields fields;
 	struct rtl2832u_status status;
 	unsigned long freq;
@@ -257,7 +262,11 @@ static int cmd_tuner_test(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	if (freq < R820T2_LO_MIN_HZ || freq > R820T2_LO_MAX_HZ) {
-		shell_error(sh, "Out of range: %u..%u Hz", R820T2_LO_MIN_HZ, R820T2_LO_MAX_HZ);
+		char max[SI_FMT_LEN];
+
+		shell_error(sh, "Out of range: %s to %s",
+			    si_fmt(buf, sizeof(buf), R820T2_LO_MIN_HZ, "Hz"),
+			    si_fmt(max, sizeof(max), R820T2_LO_MAX_HZ, "Hz"));
 		return -ERANGE;
 	}
 
@@ -279,8 +288,8 @@ static int cmd_tuner_test(const struct shell *sh, size_t argc, char **argv)
 		return err;
 	}
 
-	shell_print(sh, "Requested LO: %lu Hz", freq);
-	shell_print(sh, "Programmed:   %u Hz", r820t2_lo_freq());
+	shell_print(sh, "Requested LO: %s", si_fmt(buf, sizeof(buf), freq, "Hz"));
+	shell_print(sh, "Programmed:   %s", si_fmt(buf, sizeof(buf), r820t2_lo_freq(), "Hz"));
 	shell_print(sh, "PLL lock:     %s", (err == 0) ? "yes" : "no");
 	r820t2_decode(r820t2_regs(), &fields);
 	shell_print(sh, "VCO fine:     %u (nominal %u)", fields.vco_fine, TUNER_VCO_FINE_NOMINAL);

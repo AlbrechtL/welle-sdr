@@ -120,11 +120,12 @@ VGA code:     8
 PLL:          Nint 60, SDM 32267/65536 (on), reference 28.8 MHz
 VCO current:  4
 Autotune:     8 kHz
-VCO:          3484359667 Hz
-LO:           435544958 Hz (VCO / 8)
+VCO:          3.484359667 GHz
+LO:           435.544958 MHz (VCO / 8)
 ```
 
-The LO is the center frequency plus the IF (here 1.625 MHz). Gains are librtlsdr's gain steps
+The VCO runs at 1.77 to 3.54 GHz and is divided down to the LO. The LO is the center frequency
+plus the IF (here 1.625 MHz). Gains are librtlsdr's gain steps
 for the programmed indices. After a host tool closes the device, librtlsdr puts the tuner in
 standby: the PLL reads unlocked and the gains read as auto.
 
