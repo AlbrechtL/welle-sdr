@@ -27,12 +27,18 @@ start with the SPDX header lines used in the existing files.
 - `src/sample_src.c`: dummy sample source. This is the hook for the SDR signal path.
 - `src/welle_sdr_shell.c`: read-only `welle-sdr` shell commands, using the accessors in
   `src/rtl2832u.h` and `src/r820t2.h`.
+- `src/status_led.c`: USB state on `led0`, polled every 50 ms from `rtl2832u_get_status()` and
+  `usbd_is_suspended()`. Off while not configured or suspended (an unplug reads as a suspend),
+  one blink and then on when the host configures the device (also after a resume), 5 Hz blink
+  while streaming.
 
 ## Hardware and host setup
 
 - USB data goes over USBHS connector P6 (PB6 DM, PB7 DP, built-in HS PHY, no pinctrl). The
   WCH-Link debugger shows up as `/dev/ttyACM0`; its serial port carries the USART1 console at
   115200 baud.
+- The board LEDs are not routed to the SoC. The status LED needs a jumper wire from J3 LED1
+  to PD0 (active low). The board dtsi disables the `leds` node; the app overlay enables it.
 - `west` is only available after `source ~/src/zephyrproject/.venv/bin/activate`.
 - Build from the workspace root: `west build -b ch32v307v_evt_r1/ch32v307/ram_64k
   apps/rtlsdr_emu -d apps/rtlsdr_emu/build`, flash with `west flash -d apps/rtlsdr_emu/build`

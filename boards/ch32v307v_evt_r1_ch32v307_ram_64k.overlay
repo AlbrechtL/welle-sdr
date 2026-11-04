@@ -21,3 +21,8 @@
 		};
 	};
 };
+
+/* LED1 shows the USB state; it needs a jumper wire from J3 LED1 to PD0 */
+&{/leds} {
+	status = "okay";
+};

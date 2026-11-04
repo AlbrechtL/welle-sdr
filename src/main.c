@@ -8,6 +8,9 @@
 #include <zephyr/usb/usbd.h>
 
 #include <zephyr/logging/log.h>
+
+#include "status_led.h"
+
 LOG_MODULE_REGISTER(rtlsdr_emu, LOG_LEVEL_INF);
 
 /* Generic RTL2832U OEM dongle, as listed in librtlsdr known_devices */
@@ -152,6 +155,11 @@ static int rtl_usbd_init(void)
 int main(void)
 {
 	int err;
+
+	err = status_led_init(&rtl_usbd);
+	if (err != 0) {
+		LOG_WRN("Status LED not available (%d)", err);
+	}
 
 	err = rtl_usbd_init();
 	if (err != 0) {

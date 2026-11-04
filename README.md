@@ -24,4 +24,9 @@ The firmware needs the 256 KB flash / 64 KB SRAM split in the chip's option byte
 
 The console is on USART1 at 115200 baud, available through the WCH-Link serial port. It runs
 the Zephyr shell: `welle-sdr status` shows the stream state, sample rate, center frequency and
-tuner gain, and changes made by the host are logged.
+tuner gain, and changes made by the host are logged, as are USB connection, enumeration and
+host driver open/close.
+
+LED1 shows the USB state once a jumper wire connects J3 LED1 to PD0: it is off while no host
+has configured the device or the cable is removed, blinks once and then stays on when the host
+configures the device, and blinks at 5 Hz while samples are streamed.
