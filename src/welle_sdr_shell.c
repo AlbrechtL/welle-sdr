@@ -19,6 +19,7 @@
 #include "r820t2.h"
 #include "rtl2832u.h"
 #include "si_fmt.h"
+#include "testsig.h"
 
 /* Nominal VCO fine tune value, register 4 bits 5:4 */
 #define TUNER_VCO_FINE_NOMINAL 2U
@@ -357,8 +358,8 @@ static int adc_start(const struct shell *sh, uint32_t rate)
 
 	err = dvp_adc_start(adc_dev, rate);
 	if (err == -EINVAL) {
-		shell_error(sh, "Rate not reachable: 144 MHz / even divider >= 6 "
-				"(24, 18, 14.4, 12, 9, 8 MHz, ...)");
+		shell_error(sh, "Rate not reachable: 144 MHz / integer divider >= 6 "
+				"(24, 20.57, 18, 16, 14.4, 12, ... MHz)");
 	} else if (err == -EALREADY) {
 		shell_error(sh, "Already running");
 	} else if (err != 0) {
@@ -556,6 +557,45 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_adc,
 	SHELL_SUBCMD_SET_END
 );
 
+static int cmd_testsig(const struct shell *sh, size_t argc, char **argv)
+{
+	char buf[SI_FMT_LEN];
+	unsigned long freq;
+	uint32_t actual;
+	int err = 0;
+
+	ARG_UNUSED(argc);
+
+	if (strcmp(argv[1], "off") == 0) {
+		return testsig_set(0U, NULL);
+	}
+
+	freq = shell_strtoul(argv[1], 0, &err);
+	if (err != 0 || freq == 0UL || freq > UINT32_MAX) {
+		shell_error(sh, "Invalid number");
+		return -EINVAL;
+	}
+
+	err = testsig_set((uint32_t)freq, &actual);
+	if (err == -ERANGE) {
+		char max[SI_FMT_LEN];
+
+		shell_error(sh, "Out of range: %s to %s",
+			    si_fmt(buf, sizeof(buf), TESTSIG_MIN_HZ, "Hz"),
+			    si_fmt(max, sizeof(max), TESTSIG_MAX_HZ, "Hz"));
+		return err;
+	}
+
+	if (err != 0) {
+		shell_error(sh, "Test signal error %d", err);
+		return err;
+	}
+
+	shell_print(sh, "Test signal on PA7: %s", si_fmt(buf, sizeof(buf), actual, "Hz"));
+
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tuner,
 	SHELL_CMD_ARG(regs, NULL, "Dump and decode the R820T2 registers, [live] reads the chip",
 		      cmd_tuner_regs, 1, 1),
@@ -569,6 +609,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_welle_sdr,
 	SHELL_CMD_ARG(status, NULL, "Show USB, stream and tuner state", cmd_status, 1, 0),
 	SHELL_CMD(tuner, &sub_tuner, "R820T2 tuner commands", NULL),
 	SHELL_CMD(adc, &sub_adc, "AD9280 ADC capture commands", NULL),
+	SHELL_CMD_ARG(testsig, NULL, "Square wave on PA7 for AD IN: <hz> or off", cmd_testsig,
+		      2, 0),
 	SHELL_CMD_ARG(demod, NULL, "Dump demod registers: <page> <reg> [len]", cmd_demod, 3, 1),
 	SHELL_SUBCMD_SET_END
 );

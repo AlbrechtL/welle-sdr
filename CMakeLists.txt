@@ -18,5 +18,6 @@ target_sources(app PRIVATE
   src/sample_src.c
   src/si_fmt.c
   src/status_led.c
+  src/testsig.c
   src/welle_sdr_shell.c
 )

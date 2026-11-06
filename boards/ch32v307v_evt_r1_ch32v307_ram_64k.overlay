@@ -20,6 +20,18 @@
 	};
 
 	/*
+	 * Square-wave test signal for AD IN: TIM3_CH2 on PA7, welle-sdr testsig.
+	 * src/testsig.c programs TIM3 directly: with TIM1 (wch,adtm-pwm) and
+	 * TIM3 (wch,gptm-pwm) both enabled, pwm_wch_gptm.c defines its instance
+	 * 0 config twice and does not build.
+	 */
+	zephyr,user {
+		clocks = <&rcc CH32V20X_V30X_CLOCK_TIM3>;
+		pinctrl-0 = <&tim3_ch2_default>;
+		pinctrl-names = "default";
+	};
+
+	/*
 	 * R820T2 tuner: SCL on PB10, SDA on PB11, bit-banged. The I2C2
 	 * controller on these pins is not used, see the README.
 	 */
@@ -91,6 +103,15 @@
 			slew-rate = "max-speed-50mhz";
 		};
 	};
+
+	tim3_ch2_default: tim3_ch2_default {
+		group1 {
+			pinmux = <TIM3_CH2_PA7_0>;
+			output-high;
+			drive-push-pull;
+			slew-rate = "max-speed-50mhz";
+		};
+	};
 };
 
 /* ADC clock: TIM1 counts at the undivided 144 MHz, DCLK = 144 MHz / period */
@@ -104,6 +125,7 @@
 	pinctrl-names = "default";
 	status = "okay";
 };
+
 
 &usart2 {
 	current-speed = <115200>;

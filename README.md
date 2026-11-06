@@ -287,8 +287,9 @@ lot number again when using another board.
 
 - DCLK is a timer PWM output: TIM3_CH1 on PA6 (variant A) or TIM1_CH1 on PA8 (variant B).
   This is option A in "Sample clock (DCLK)" in `docs/ad9280-adc-module.md`, which covers
-  the choice of rate. Both timers run at 144 MHz; even dividers give 50 % duty, for example
-  8 MHz (144 / 18) or at most 24 MHz (144 / 6) within the 14.7 ns pulse width limit.
+  the choice of rate. Both timers run at 144 MHz; the clock is high for half the divider,
+  rounded down (50 % duty for even dividers), for example 8 MHz (144 / 18) or at most
+  24 MHz (144 / 6) within the 14.7 ns pulse width limit.
 - The DVP latches on DVP_PCLK, which carries DCLK itself (variant A) or DCLK fed back
   through the PA8-PA6 jumper (variant B), so the capture follows the clock whatever its
   source. With an external clock (options B to D), connect it to module J2 DCLK and PA6
@@ -339,8 +340,9 @@ the consumer releases them; if it is too slow, the oldest block is reused (overr
 Shell commands:
 
 - `welle-sdr adc start [rate_hz]`: start the capture, default 8 MS/s. The rate must be 144 MHz
-  divided by an even number of at least 6: 24, 18, 14.4, 12, 9, 8 MS/s and lower. The DVP
-  latches on the falling DCLK edge below 20 MS/s, on the rising edge above.
+  divided by an integer of at least 6: 24, 20.57, 18, 16, 14.4, 12, ... MS/s. Odd dividers
+  give a clock high for (divider - 1) / 2 cycles. The DVP latches on the falling DCLK edge
+  below 20 MS/s, on the rising edge above.
 - `welle-sdr adc stop`
 - `welle-sdr adc status`: blocks, overruns, FIFO overflows, frame starts, spurious block
   interrupts and whether the guard area after the ring is intact.

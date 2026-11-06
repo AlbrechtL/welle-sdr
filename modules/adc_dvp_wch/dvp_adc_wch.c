@@ -56,7 +56,7 @@ BUILD_ASSERT((BLOCK_SIZE % 4) == 0, "The DVP DMA moves 4 bytes per request");
 #define FILL_PATTERN 0x55U
 #define GUARD_SIZE   64U
 
-/* At 144 MHz, 6 cycles keep 20.8 ns high and low time (AD9280 minimum 14.7 ns) */
+/* At 144 MHz, 6 cycles keep at least 3 cycles = 20.8 ns high and low (AD9280 minimum 14.7 ns) */
 #define MIN_PERIOD_CYCLES 6U
 
 /* Above this rate the falling edge falls into the AD9280 output transition (t_OD 25 ns) */
@@ -255,7 +255,7 @@ int dvp_adc_start(const struct device *dev, uint32_t rate_hz)
 	}
 
 	period = (uint32_t)(cycles_per_sec / rate_hz);
-	if (period < MIN_PERIOD_CYCLES || (period % 2U) != 0U || period > UINT16_MAX) {
+	if (period < MIN_PERIOD_CYCLES || period > UINT16_MAX) {
 		return -EINVAL;
 	}
 
