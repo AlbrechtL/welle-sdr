@@ -39,8 +39,9 @@ existing files.
 ## Hardware and host setup
 
 - USB data goes over USBHS connector P6 (PB6 DM, PB7 DP, built-in HS PHY, no pinctrl). The
-  WCH-Link debugger shows up as `/dev/ttyACM0`; its serial port carries the USART1 console at
-  115200 baud.
+  WCH-Link debugger shows up as `/dev/ttyACM0`; its serial port carries the USART2 console at
+  115200 baud (PA2 TX, PA3 RX, jumper wires from the WCH-Link header J2 pins 3/5; PA9/PA10
+  are ADC data inputs, so `&usart1` is disabled in the overlay).
 - R820T2: SCL on PB10, SDA on PB11, GND, 3.3 V, external pull-ups to 3.3 V, 28.8 MHz crystal
   on the tuner side. 7-bit address 0x1a.
 - The board LEDs are not routed to the SoC. The status LED needs a jumper wire from J3 LED1
@@ -137,7 +138,7 @@ existing files.
 
 ## Shell and logs
 
-- USART1 runs the Zephyr shell (prompt `welle-sdr:~$`), and logs go through the shell backend.
+- USART2 runs the Zephyr shell (prompt `welle-sdr:~$`), and logs go through the shell backend.
   `welle-sdr status`, `welle-sdr tuner regs [live]` (hex dump and decoded fields of the shadow
   or of a chip read, logical values, not bit-reversed) and `welle-sdr demod <page> <reg> [len]`
   are read-only. Field decoding is `r820t2_decode()` in `r820t2.c`, shared with the LO and gain

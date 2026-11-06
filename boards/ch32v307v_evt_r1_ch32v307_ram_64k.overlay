@@ -5,8 +5,18 @@
  */
 
 #include <zephyr/dt-bindings/clock/ch32v20x_30x-clocks.h>
+#include <zephyr/dt-bindings/pinctrl/ch32v20x_30x-pinctrl.h>
 
 / {
+	/*
+	 * Console on USART2 (PA2 TX, PA3 RX), wired to the WCH-Link UART on J2
+	 * pins 3 and 5. PA9/PA10 carry ADC data bits DB0/DB1.
+	 */
+	chosen {
+		zephyr,console = &usart2;
+		zephyr,shell-uart = &usart2;
+	};
+
 	/*
 	 * R820T2 tuner: SCL on PB10, SDA on PB11, bit-banged. The I2C2
 	 * controller on these pins is not used, see the README.
@@ -33,6 +43,43 @@
 			status = "okay";
 		};
 	};
+};
+
+&pinctrl {
+	usart2_default: usart2_default {
+		group1 {
+			pinmux = <USART2_TX_PA2_0>;
+			output-high;
+			drive-push-pull;
+			slew-rate = "max-speed-10mhz";
+		};
+
+		group2 {
+			pinmux = <USART2_RX_PA3_0>;
+			bias-pull-up;
+		};
+	};
+};
+
+&usart2 {
+	current-speed = <115200>;
+	pinctrl-0 = <&usart2_default>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* PA9/PA10 are ADC data inputs (DB0/DB1) */
+&usart1 {
+	status = "disabled";
+};
+
+/* R7 is removed; PC8/PC9 are ADC data inputs (DB2/DB3) */
+&mac {
+	status = "disabled";
+};
+
+&mdio {
+	status = "disabled";
 };
 
 /* LED1 shows the USB state; it needs a jumper wire from J3 LED1 to PD0 */

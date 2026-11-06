@@ -22,7 +22,9 @@ rtl_test
 
 The firmware needs the 256 KB flash / 64 KB SRAM split in the chip's option bytes.
 
-The console is on USART1 at 115200 baud, available through the WCH-Link serial port. It runs
+The console is on USART2 (PA2 TX, PA3 RX) at 115200 baud, available through the WCH-Link
+serial port; this needs two wires on the EVT board, see "Board modifications on the EVT
+board". It runs
 the Zephyr shell: `welle-sdr status` shows the stream state, sample rate, center frequency and
 tuner gain, and changes made by the host are logged, as are USB connection, enumeration and
 host driver open/close.
@@ -244,11 +246,12 @@ Steps:
 1. Remove the jumpers 3-4 and 5-6. PA9 and PA10 are then free for DB0 and DB1.
 2. Wire EVT J2 pin 3 (WCH-Link RX) to PA2 (USART2_TX) and EVT J2 pin 5 (WCH-Link TX) to
    PA3 (USART2_RX). The console stays on the same `/dev/ttyACM0` at 115200 baud.
-3. Set `zephyr,console` and `zephyr,shell-uart` to `&usart2` in the app overlay, with
-   pinctrl `USART2_TX_PA2_0` / `USART2_RX_PA3_0` (not done yet). Until then the console is
-   silent with the jumpers removed. Flashing is not affected.
+3. The app overlay sets `zephyr,console` and `zephyr,shell-uart` to `&usart2` (pinctrl
+   `USART2_TX_PA2_0` / `USART2_RX_PA3_0`) and disables `&usart1`, so PA9 is not driven.
+   Flashing is not affected by the jumpers.
 
-To go back to USART1, refit the two jumpers and remove the two wires.
+To go back to USART1, refit the two jumpers, remove the two wires and drop the USART
+settings from the overlay.
 
 #### 2. Ethernet off PC8/PC9
 
