@@ -8,8 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 Zephyr firmware that makes a WCH CH32V307V-EVT-R1 enumerate as an RTL-SDR dongle
 (RTL2832U with an R820T2 tuner, USB `0bda:2838`) on the USBHS connector P6. The
 stock librtlsdr tools (`rtl_test`, `rtl_sdr`, `rtl_tcp`) work without a new driver.
-The host's tuner requests go to a real R820T2 on I2C; the samples are still dummy
-data: a byte counter in `rtl_test` test mode, otherwise an I/Q tone at fs/16.
+The host's tuner requests go to a real R820T2 on I2C. The samples come from an AD9280 ADC
+on the DVP, converted to I/Q on the MCU (see "I/Q stream"); in `rtl_test` test mode the
+stream is a byte counter.
 
 The USBHS device controller driver is an out-of-tree module in
 `modules/udc_wch_usbhs`.
@@ -152,8 +153,8 @@ CH32V307 digital video port (DVP) captures its 8-bit parallel data: it latches D
 DVP_PCLK and writes them to SRAM by DMA, at up to 144 MHz pixel clock (datasheet table
 4-37). The MCU generates DCLK with TIM1 and feeds it both to the ADC and back into
 DVP_PCLK. Status: the capture driver (`modules/adc_dvp_wch`) and the `welle-sdr adc` shell
-commands implement variant B below, see "ADC test". The USB stream still carries dummy data
-(`src/sample_src.c`).
+commands implement variant B below, see "ADC test". The USB stream carries the down-converted
+ADC data, see "I/Q stream".
 
 Pins are taken from the
 [CH32V303/305/307 datasheet](https://ch32-riscv-ug.github.io/CH32V307/datasheet_en/CH32V20x_30xDS0.PDF)
@@ -390,3 +391,85 @@ DVP behavior found while testing, handled in the driver:
 - While the CPU is busy, the block interrupt can fire a second time for the same block, with
   no buffer switch until the next block. The driver takes a block as complete only when
   `RB_DVP_BUF_TOG` shows the switch and counts the others as spurious.
+
+## I/Q stream
+
+Outside `rtl_test` test mode, a thread in `src/sample_src.c` converts the ADC blocks to I/Q at
+the host's sample rate and IF and submits them as bulk IN transfers. The ADC paces the stream.
+The down-converter is `src/ddc.c`:
+
+1. The ADC rate fs is chosen so that fs / 4 lies near the IF. Mixing by fs / 4 is the
+   sequence 1, -j, -1, +j: each sample is added to or subtracted from I or Q, without a
+   multiplication.
+2. A second-order CIC decimates by D = fs / host rate, with additions only.
+3. A complex rotation per output sample removes the residual |IF| - fs / 4.
+
+The IF is the one the host writes into the demodulator (page 1, regs 0x19..0x1b), the spectrum
+inversion bit is page 1 reg 0x15 bit 0. Without a tuner librtlsdr switches to direct sampling
+and writes the center frequency as the IF, so the stream shows the spectrum at AD IN around
+the tuned frequency, as a real RTL2832U in direct sampling mode does.
+
+### Rate plan
+
+`ddc_plan()` takes fs = 144 MHz / p and D with fs = D * host rate. Host rates that divide
+144 MHz work exactly: 1.0, 1.2, 2.0, 2.4 MS/s, ... 2.048 MS/s (DAB, welle.io) is not
+reachable; the nearest rate is streamed and a warning gives the error in ppm.
+
+Among the exact plans it takes the smallest residual whose estimated CPU load is at most
+60 %, else the cheapest. The load model is fitted to measured times of `ddc_process()`
+(`-O2`, 144 MHz): 7.9 cycles per input and 47 per output sample when D is a multiple of 4
+(the outputs fall on the ends of the four-sample groups), 13.3 and 86.5 cycles otherwise.
+`welle-sdr status` shows the plan, the residual, the measured and the estimated load:
+
+```
+DDC:          running, IF 1099999 Hz
+ADC rate:     4 MS/s, decimation 4, residual 99999 Hz
+Output rate:  1 MS/s (exact)
+DDC load:     55 % (estimated 54 %)
+DDC output:   2945 transfers, 0 bytes dropped
+```
+
+### Test with the square-wave test signal
+
+`welle-sdr testsig <hz>` drives a square wave on PA7 (TIM3_CH2, `src/testsig.c`), `off` stops
+it. Wire PA7 to AD IN of the module (J3) through about 1 kOhm, GND to GND. TIM3 is programmed
+directly: with TIM1 (`wch,adtm-pwm`, the ADC clock) and TIM3 (`wch,gptm-pwm`) both enabled,
+Zephyr's `pwm_wch_gptm.c` defines `pwm_wch_gptm_0_config` twice and does not build.
+
+```
+welle-sdr testsig 1200000
+rtl_sdr -f 1100000 -s 1000000 -n 8000000 out.bin
+tools/iq_peaks.py out.bin -s 1000000
+```
+
+`tools/iq_peaks.py` lists the strongest spectral lines relative to the center frequency.
+Measured without tuner (direct sampling), 1 MS/s, ADC 4 MS/s, D 4:
+
+| Line         | Level    | Origin                                                   |
+|--------------|----------|----------------------------------------------------------|
+| +100006 Hz   | 0 dB     | 1.2 MHz test signal (IF register rounds to 1099999 Hz)   |
+| +300003 Hz   | -15.9 dB | 3rd harmonic 3.6 MHz, aliased to 0.4 MHz at 4 MS/s       |
+| -300003 Hz   | -30.6 dB | image of the test signal (-1.2 MHz - IF, folded)         |
+| -99487 Hz    | -53.7 dB | mirror of the test signal                                |
+
+Tuned to 1.3 MHz the line moves to -99991 Hz (sign check). 8 M samples arrive in real time,
+with no dropped transfers and no lost ADC blocks.
+
+The down-converter has host tests (`native_sim`), including a bit-exact comparison with a
+per-sample reference: `west twister -p native_sim -T apps/welle-sdr/tests/ddc`.
+
+### Limits
+
+- CPU: 1 MS/s with fs = 4 MS/s needs about 55 % of the CPU. 2 MS/s (estimated 109 % at the
+  best plan) does not fit: ADC blocks are lost and the spectrum shows sidebands at the
+  block rate. Lost blocks show up as `Spurious IRQs` in `welle-sdr adc status`, as their
+  interrupts arrive late and merge.
+- The CIC droops towards the band edges (-1.1 dB at 0.2 x rate from the band center,
+  -7.8 dB at 0.5 x rate) and folds signals around multiples of the output rate into the band
+  with limited suppression (about 30 dB for the image of a tone near the center). The band
+  center is fs / 4, so the residual shifts the host's band against it.
+- DC at AD IN lands on a CIC null only when D is a multiple of 4; otherwise it leaks into the
+  band edge.
+- `rtl_test -p` runs in test mode, so it measures the unpaced counter stream (about
+  2.37 MS/s), not the I/Q rate.
+

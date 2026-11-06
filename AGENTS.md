@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 
 Zephyr firmware that makes a WCH CH32V307V-EVT-R1 enumerate as an RTL-SDR dongle (RTL2832U +
 R820T2, USB `0bda:2838`), so the stock librtlsdr tools work without a host driver. Tuner
-requests go to a real R820T2 on a bit-banged I2C bus; the samples are still dummy data. This
+requests go to a real R820T2 on a bit-banged I2C bus; the samples come from an AD9280 on the DVP,
+down-converted on the MCU (README "I/Q stream"). This
 file records what is not obvious from the code. Code follows Zephyr style
 (`zephyr/doc/contribute/style/`); new files start with the SPDX header lines used in the
 existing files.
@@ -35,7 +36,17 @@ existing files.
   `&tim1` prescaler 0, HSYNC/VSYNC from PA0/PA1). README "ADC test" lists the DVP behavior
   the driver depends on (sync edges need a running PCLK, VSYNC before HSYNC, second block
   interrupt without buffer switch under load).
-- `src/sample_src.c`: dummy sample source. This is the hook for the SDR signal path.
+- `src/sample_src.c`: stream source. Test mode: byte counter pulled by `rtl_stream_kick()`.
+  Otherwise a thread (stack 2048: 1024 overflowed silently and reset the MCU) takes ADC blocks,
+  runs `ddc_process()` into `rtl2832u_alloc_xfer()` buffers and submits them with
+  `rtl2832u_submit()`; it re-plans when the host changes rate, IF or inversion.
+- `src/ddc.c`: down-converter (fs / 4 mixer, CIC2, rotation) and rate plan with a CPU load
+  model. Pure C, built with `-O2` (2.2x faster than `-Os`), host tests in `tests/ddc`
+  (`west twister -p native_sim -T apps/welle-sdr/tests/ddc`), including a bit-exact
+  per-sample reference: keep it in sync when the arithmetic changes.
+- `src/testsig.c`: square wave on PA7 (TIM3_CH2) for AD IN, registers programmed directly
+  (Zephyr's `pwm_wch_gptm.c` does not build with a GPTM and an ADTM instance enabled).
+- `tools/iq_peaks.py`: strongest spectral lines of an `rtl_sdr` recording.
 - `src/welle_sdr_shell.c`: `welle-sdr` shell commands, using the accessors in
   `src/rtl2832u.h`, `src/r820t2.h` and `dvp_adc.h` (`welle-sdr adc ...`).
 - `src/status_led.c`: USB state on `led0`, polled every 50 ms from `rtl2832u_get_status()` and
@@ -73,7 +84,9 @@ existing files.
   `r82xx_write: i2c wr failed` lines.
 - `rtl_test` (test mode, 8-bit counter): `Samples per million lost (minimum): 0`. Stop it with
   SIGINT and run it through `stdbuf -o0 -e0`, otherwise the output is lost.
-- `rtl_test -p`: reports the real sample rate every 10 s (currently about 2.25 MS/s unpaced).
+- `rtl_test -p`: reports the rate every 10 s. It runs in test mode (unpaced counter, about
+  2.37 MS/s), so it says nothing about the I/Q stream; check that with `rtl_sdr` and
+  `tools/iq_peaks.py` (README "I/Q stream").
 - `rtl_sdr -n N`: N must not be a multiple of 131072, or rtl_sdr never stops (host tool bug:
   its stop condition is `bytes_to_read < len`).
 - The Linux `dvb_usb_rtl28xxu` driver may bind first. librtlsdr detaches it; no blacklist is
@@ -217,9 +230,13 @@ existing files.
 - Throughput is about 2.25 MS/s (4.5 MB/s), about one 512-byte packet per microframe, probably
   because every packet is re-armed from the ISR and NAKed in between. Candidates: double
   buffering (`BUF_MODE`) or DMA straight from the net_buf. Real dongles do 2.4 to 3.2 MS/s.
-- The stream is unpaced; `sample_src_set_rate()` receives the host's rate but ignores it.
+- The counter stream in test mode is unpaced; the I/Q stream is paced by the ADC.
+- CPU: the down-converter fits 1 MS/s (55 % load), not 2 MS/s; 2.048 MS/s is not an exact
+  plan. See README "I/Q stream" for the cost model and limits.
+- Timing on the target: `k_cycle_get_32()` jumps back by one 10 ms tick, so time only
+  intervals shorter than a tick with it (one call per measurement); a 10-call loop over
+  1.7 M cycles read as 0.3 M and hid that the first DDC was 6x too slow.
 - The driver has not been tested with Linux `testusb` (loopback build) or with OUT endpoints
   other than EP0.
-- Later phases: feed the ADC blocks into the stream instead of the dummy sample source (mix
-  the IF to baseband, decimate to the host rate). The capture runs, but nothing consumes it
-  except `welle-sdr adc capture`.
+- Later phases: 2 MS/s and above (faster general path, or a lower-cost architecture), CIC
+  droop compensation, test with the R820T2 (spectrum inversion direction to be confirmed).
