@@ -19,4 +19,58 @@ config WELLE_SDR_XFER_COUNT
 	  Number of bulk IN transfers kept queued on the endpoint. The ADC
 	  paces the stream, so the buffers also absorb delays of the host.
 
+menu "IF AGC"
+
+config WELLE_SDR_IF_AGC_FIXED_MV
+	int "IF_AGC voltage while the loop is off, in mV"
+	default 1550
+	range 0 3300
+	help
+	  Voltage on the R820T2 IF_AGC pin while the host's RTL AGC is off.
+	  The tuner only uses it while register 0x0c bit 4 selects pin
+	  control, as librtlsdr's register init does until the host sets a
+	  gain mode. 1550 mV is about +22 dB VGA gain.
+
+config WELLE_SDR_IF_AGC_MIN_MV
+	int "Lowest IF_AGC voltage, in mV"
+	default 600
+	range 0 3300
+	help
+	  Lower end of the IF_AGC range, -1.5 dB VGA gain in the datasheet.
+
+config WELLE_SDR_IF_AGC_MAX_MV
+	int "Highest IF_AGC voltage, in mV"
+	default 2500
+	range 0 3300
+	help
+	  Upper end of the IF_AGC range, +45.5 dB VGA gain in the datasheet.
+
+config WELLE_SDR_IF_AGC_TARGET
+	int "Target level, mean absolute deviation of the ADC codes"
+	default 24
+	range 1 127
+	help
+	  Level the loop keeps at the ADC: the mean absolute deviation of the
+	  codes from their mean. 24 codes is an RMS of about 30 codes, about
+	  12 dB below full scale, room for the crest factor of OFDM signals.
+
+config WELLE_SDR_IF_AGC_STRIDE
+	int "ADC samples per measured sample"
+	default 16
+	range 1 64
+	help
+	  The loop measures every n-th ADC sample. Larger values cost less
+	  CPU time in the producer thread.
+
+config WELLE_SDR_IF_AGC_RATE_HZ
+	int "Loop updates per second"
+	default 50
+	range 1 1000
+	help
+	  The loop measures over 1 / n seconds of ADC samples and then sets
+	  the PWM once. The RC low-pass on the IF_AGC input must settle
+	  within that time.
+
+endmenu
+
 source "Kconfig.zephyr"

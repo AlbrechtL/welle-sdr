@@ -1,0 +1,5 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Vendor prefixes of the welle-sdr application bindings
+welle	welle-sdr application

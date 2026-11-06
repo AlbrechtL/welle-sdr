@@ -23,6 +23,7 @@
 
 #include <zephyr/logging/log.h>
 
+#include "if_agc.h"
 #include "r820t2.h"
 #include "rtl2832u.h"
 #include "sample_src.h"
@@ -60,10 +61,14 @@ enum rtl_block {
 #define RTL_SYS_DEMOD_CTL        0x3000U
 #define RTL_DEMOD_CTL_POWER_MASK 0xC8U
 
-/* Demod page 0 reg 0x19: 0x03 selects the counter test output, 0x05 normal */
+/*
+ * Demod page 0 reg 0x19: 0x03 selects the counter test output, 0x05 normal,
+ * 0x25 normal with the digital AGC ("RTL AGC"), which turns on the IF AGC
+ */
 #define RTL_DEMOD_TEST_PAGE 0U
 #define RTL_DEMOD_TEST_REG  0x19U
 #define RTL_DEMOD_TEST_BIT  0x02U
+#define RTL_DEMOD_AGC_BIT   0x20U
 
 /* Demod page 1 reg 0x01 bit 3: I2C repeater to the tuner */
 #define RTL_DEMOD_I2C_PAGE 1U
@@ -271,6 +276,7 @@ static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_
 
 		sample_src_set_test_mode(test);
 		LOG_INF("Test mode %s", test ? "on" : "off");
+		if_agc_set_active((p[RTL_DEMOD_TEST_REG] & RTL_DEMOD_AGC_BIT) != 0U);
 	}
 
 	if (page == RTL_DEMOD_RSAMP_PAGE && reg <= RTL_DEMOD_RSAMP_REG + 3U &&

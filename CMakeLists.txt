@@ -13,6 +13,8 @@ project(welle-sdr)
 
 target_sources(app PRIVATE
   src/ddc.c
+  src/if_agc.c
+  src/if_agc_ctl.c
   src/main.c
   src/rtl2832u.c
   src/r820t2.c

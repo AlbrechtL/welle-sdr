@@ -63,8 +63,14 @@ struct r820t2_fields {
 	uint8_t mixer_idx;
 	/** Mixer gain for @ref mixer_idx in 0.1 dB, librtlsdr gain steps. */
 	int32_t mixer_gain;
+	/** Register 3 bits 3:0: LNA gain index picked by the RF AGC. */
+	uint8_t agc_lna_idx;
+	/** Register 3 bits 7:4: mixer gain index picked by the RF AGC. */
+	uint8_t agc_mixer_idx;
 	/** Register 0x0c bits 3:0: VGA gain code. */
 	uint8_t vga_code;
+	/** Register 0x0c bit 4: VGA gain set by the IF_AGC pin, not by @ref vga_code. */
+	bool vga_pin;
 	/** Register 0x10 bits 7:5: mixer divider, 2 << field (2 to 256). */
 	uint16_t mix_div;
 	/** Register 0x10 bit 4: PLL reference divided by 2. */
@@ -114,7 +120,8 @@ int r820t2_init(void);
 /**
  * @brief Forward an I2C write from the host to the tuner.
  *
- * Updates the register shadow when the tuner acknowledges the write.
+ * Updates the register shadow when the tuner acknowledges the write. Sets
+ * register 0x0c bit 4 while r820t2_set_vga_pin_mode() is on.
  *
  * @param data First byte is the start register, followed by register values.
  * @param len Number of bytes in @p data.
@@ -143,6 +150,23 @@ int r820t2_i2c_write(const uint8_t *data, size_t len);
  * @retval -ETIMEDOUT Transfer timed out.
  */
 int r820t2_i2c_read(uint8_t *data, size_t len);
+
+/**
+ * @brief Select the VGA gain control.
+ *
+ * While on, register 0x0c bit 4 (VGA gain from the IF_AGC pin) is set in
+ * every host write. Switching writes register 0x0c: the host's last value
+ * with bit 4 set (on) or unchanged (off). Nothing is written before the host
+ * has written register 0x0c.
+ *
+ * @param on VGA gain from the IF_AGC pin.
+ *
+ * @retval 0 Success.
+ * @retval -ENODEV I2C controller not ready.
+ * @retval -EIO Wiring fault or no acknowledge.
+ * @retval -ETIMEDOUT Transfer timed out.
+ */
+int r820t2_set_vga_pin_mode(bool on);
 
 /**
  * @return Register shadow, not bit-reversed: registers 0 to 4 as last read

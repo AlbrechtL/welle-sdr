@@ -1,0 +1,34 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  PWM output into the RC low-pass on the IF_AGC input of an R820T2 tuner
+  board. The low-pass voltage sets the tuner's VGA gain while register 0x0c
+  bit 4 selects pin control.
+
+  The application programs channel 1 of the timer directly, with a period of
+  4096 timer clocks. The pinctrl state routes that channel to the pin.
+
+compatible: "welle,if-agc"
+
+include: pinctrl-device.yaml
+
+properties:
+  timer:
+    type: phandle
+    required: true
+    description: Timer whose channel 1 drives the pin, with its clocks property.
+
+  gpios:
+    type: phandle-array
+    required: true
+    description: |
+      The same pin as a GPIO. It is a floating input during tuner I2C
+      transfers, as the PWM edges disturb the bus; the low-pass capacitor
+      holds the voltage meanwhile.
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true

@@ -32,6 +32,21 @@
 	};
 
 	/*
+	 * IF AGC: TIM2_CH1 on PA15 (TIM2 partial remap 1) into the RC low-pass
+	 * on the tuner board's IF_AGC input. src/if_agc.c programs TIM2
+	 * directly, for the same reason as TIM3 above. The remap also moves
+	 * TIM2_CH2 to PB3 (DVP D5), whose output stays disabled. PA15 floats
+	 * during tuner I2C transfers, see gpios.
+	 */
+	if_agc: if-agc {
+		compatible = "welle,if-agc";
+		timer = <&tim2>;
+		gpios = <&gpioa 15 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&tim2_ch1_default>;
+		pinctrl-names = "default";
+	};
+
+	/*
 	 * R820T2 tuner: SCL on PB10, SDA on PB11, bit-banged. The I2C2
 	 * controller on these pins is not used, see the README.
 	 */
@@ -101,6 +116,16 @@
 			output-high;
 			drive-push-pull;
 			slew-rate = "max-speed-50mhz";
+		};
+	};
+
+	tim2_ch1_default: tim2_ch1_default {
+		group1 {
+			pinmux = <TIM2_CH1_PA15_1>;
+			output-high;
+			drive-push-pull;
+			/* Slowest edges: the PWM edges disturb the tuner I2C */
+			slew-rate = "max-speed-2mhz";
 		};
 	};
 

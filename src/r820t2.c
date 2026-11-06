@@ -26,6 +26,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
+#include "if_agc.h"
 #include "r820t2.h"
 
 LOG_MODULE_REGISTER(r820t2, LOG_LEVEL_INF);
@@ -52,8 +53,12 @@ LOG_MODULE_REGISTER(r820t2, LOG_LEVEL_INF);
 #define R820T2_REG_MIXER      0x07U
 #define R820T2_MIXER_AUTO     0x10U
 #define R820T2_GAIN_IDX_MASK  0x0FU
-/* Register 0x0c: VGA gain code (bits 3:0) */
+/* Register 3: gains picked by the RF AGC, LNA index (bits 3:0), mixer index (bits 7:4) */
+#define R820T2_REG_AGC        0x03U
+#define R820T2_AGC_MIXER_SHIFT 4U
+/* Register 0x0c: VGA gain code (bits 3:0), bit 4 VGA gain from the IF_AGC pin */
 #define R820T2_REG_VGA        0x0CU
+#define R820T2_VGA_PIN        0x10U
 /* Register 0x10: divider (bits 7:5), reference divided by 2 (bit 4) */
 #define R820T2_REG_DIV        0x10U
 #define R820T2_DIV_SHIFT      5U
@@ -129,6 +134,11 @@ static bool pll_valid;
 /* The PLL dividers were written since the last read */
 static bool pll_changed;
 static struct r820t2_bus_diag diag;
+/* Register 0x0c bit 4 is set in every host write */
+static bool vga_pin_forced;
+/* Last register 0x0c value the host wrote */
+static uint8_t host_vga;
+static bool host_vga_valid;
 
 /* LNA and mixer gain steps in 0.1 dB, as in librtlsdr tuner_r82xx.c */
 static const int8_t lna_gain_steps[16] = {
@@ -272,7 +282,12 @@ static int bus_write(const uint8_t *data, size_t len)
 		return err;
 	}
 
-	return bus_finish(i2c_write(i2c_dev, data, len, R820T2_I2C_ADDR_7BIT));
+	/* No IF_AGC PWM edges while SCL and SDA toggle */
+	if_agc_bus_hold(true);
+	err = i2c_write(i2c_dev, data, len, R820T2_I2C_ADDR_7BIT);
+	if_agc_bus_hold(false);
+
+	return bus_finish(err);
 }
 
 /* Read raw (bit-reversed) bytes and update the status shadow */
@@ -284,7 +299,9 @@ static int bus_read(uint8_t *data, size_t len)
 		return err;
 	}
 
+	if_agc_bus_hold(true);
 	err = bus_finish(i2c_read(i2c_dev, data, len, R820T2_I2C_ADDR_7BIT));
+	if_agc_bus_hold(false);
 	if (err == 0) {
 		for (size_t i = 0U; i < MIN(len, R820T2_NUM_STATUS_REGS); i++) {
 			regs[i] = bitrev8(data[i]);
@@ -328,6 +345,8 @@ int r820t2_init(void)
 	memset(regs, 0, sizeof(regs));
 	pll_valid = false;
 	pll_changed = false;
+	vga_pin_forced = false;
+	host_vga_valid = false;
 	diag.last_err = R820T2_BUS_OK;
 
 	err = bus_read(&raw, 1U);
@@ -345,19 +364,46 @@ int r820t2_init(void)
 	return err;
 }
 
+/* Offset of register 0x0c in a write block, 0 if the block does not cover it */
+static size_t vga_offset(const uint8_t *data, size_t len)
+{
+	if (data[0] > R820T2_REG_VGA || R820T2_REG_VGA - data[0] + 1U >= len) {
+		return 0U;
+	}
+
+	return R820T2_REG_VGA - data[0] + 1U;
+}
+
 int r820t2_i2c_write(const uint8_t *data, size_t len)
 {
+	uint8_t forced[R820T2_NUM_REGS + 1U];
+	const uint8_t *out = data;
+	size_t vga;
 	int err;
 
 	if (len == 0U) {
 		return -EINVAL;
 	}
 
+	vga = vga_offset(data, len);
+
 	k_mutex_lock(&tuner_lock, K_FOREVER);
 
-	err = bus_write(data, len);
+	/* A block beyond the register file is never written by librtlsdr; it is passed on as is */
+	if (vga_pin_forced && vga != 0U && len <= sizeof(forced)) {
+		memcpy(forced, data, len);
+		forced[vga] |= R820T2_VGA_PIN;
+		out = forced;
+	}
+
+	err = bus_write(out, len);
 	if (err == 0) {
-		shadow_write(data, len);
+		shadow_write(out, len);
+
+		if (vga != 0U) {
+			host_vga = data[vga];
+			host_vga_valid = true;
+		}
 	}
 
 	k_mutex_unlock(&tuner_lock);
@@ -446,7 +492,10 @@ void r820t2_decode(const uint8_t *r, struct r820t2_fields *f)
 	f->mixer_manual = (r[R820T2_REG_MIXER] & R820T2_MIXER_AUTO) == 0U;
 	f->mixer_idx = r[R820T2_REG_MIXER] & R820T2_GAIN_IDX_MASK;
 	f->mixer_gain = gain_sum(mixer_gain_steps, f->mixer_idx);
+	f->agc_lna_idx = r[R820T2_REG_AGC] & R820T2_GAIN_IDX_MASK;
+	f->agc_mixer_idx = r[R820T2_REG_AGC] >> R820T2_AGC_MIXER_SHIFT;
 	f->vga_code = r[R820T2_REG_VGA] & R820T2_GAIN_IDX_MASK;
+	f->vga_pin = (r[R820T2_REG_VGA] & R820T2_VGA_PIN) != 0U;
 
 	f->mix_div = (uint16_t)(2U << (div >> R820T2_DIV_SHIFT));
 	f->refdiv2 = (div & R820T2_REFDIV2) != 0U;
@@ -493,6 +542,33 @@ bool r820t2_manual_gain(int32_t *gain_tenth_db)
 	return true;
 }
 
+int r820t2_set_vga_pin_mode(bool on)
+{
+	int err = 0;
+
+	k_mutex_lock(&tuner_lock, K_FOREVER);
+
+	vga_pin_forced = on;
+
+	/*
+	 * The shadow is 0 until the host writes 0x0c; writing a value derived
+	 * from it would clear bit 6 and power the VGA off.
+	 */
+	if (host_vga_valid) {
+		const uint8_t buf[2] = {R820T2_REG_VGA,
+					on ? (uint8_t)(host_vga | R820T2_VGA_PIN) : host_vga};
+
+		err = bus_write(buf, sizeof(buf));
+		if (err == 0) {
+			shadow_write(buf, sizeof(buf));
+		}
+	}
+
+	k_mutex_unlock(&tuner_lock);
+
+	return err;
+}
+
 void r820t2_bus_check(struct r820t2_bus_diag *out)
 {
 	k_mutex_lock(&tuner_lock, K_FOREVER);
@@ -514,6 +590,7 @@ int r820t2_bus_scan(uint8_t *found, size_t max, size_t *count)
 		.len = 0U,
 		.flags = I2C_MSG_WRITE | I2C_MSG_STOP,
 	};
+	int probe;
 	int err = 0;
 
 	*count = 0U;
@@ -528,7 +605,11 @@ int r820t2_bus_scan(uint8_t *found, size_t max, size_t *count)
 		}
 
 		/* No result recording: most addresses are expected not to answer */
-		if (i2c_transfer(i2c_dev, &msg, 1U, addr) == 0) {
+		if_agc_bus_hold(true);
+		probe = i2c_transfer(i2c_dev, &msg, 1U, addr);
+		if_agc_bus_hold(false);
+
+		if (probe == 0) {
 			if (*count < max) {
 				found[*count] = (uint8_t)addr;
 			}

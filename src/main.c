@@ -9,6 +9,7 @@
 
 #include <zephyr/logging/log.h>
 
+#include "if_agc.h"
 #include "status_led.h"
 
 LOG_MODULE_REGISTER(welle_sdr, LOG_LEVEL_INF);
@@ -155,6 +156,12 @@ static int rtl_usbd_init(void)
 int main(void)
 {
 	int err;
+
+	/* Before USB: the IF_AGC pin must not float once the host sets pin control */
+	err = if_agc_init();
+	if (err != 0) {
+		LOG_WRN("IF AGC PWM not available (%d)", err);
+	}
 
 	err = status_led_init(&rtl_usbd);
 	if (err != 0) {

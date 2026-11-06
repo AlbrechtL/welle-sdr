@@ -16,6 +16,8 @@
 
 #include <dvp_adc.h>
 
+#include "if_agc.h"
+#include "if_agc_ctl.h"
 #include "r820t2.h"
 #include "rtl2832u.h"
 #include "sample_src.h"
@@ -24,6 +26,25 @@
 
 /* Nominal VCO fine tune value, register 4 bits 5:4 */
 #define TUNER_VCO_FINE_NOMINAL 2U
+
+/* Largest IF AGC target in codes, half the ADC range */
+#define AGC_TARGET_MAX 127UL
+
+static void print_if_agc_line(const struct shell *sh)
+{
+	struct if_agc_stats agc;
+	int32_t gain;
+	int32_t mag;
+
+	if_agc_get_stats(&agc);
+	gain = if_agc_ctl_gain(agc.counts);
+	/* Sign printed separately, so -0.5 dB keeps it */
+	mag = (gain < 0) ? -gain : gain;
+
+	shell_print(sh, "IF AGC:       %s, %u mV (VGA ~%s%d.%d dB)", agc.active ? "loop" : "fixed",
+		    if_agc_ctl_counts_to_mv(agc.counts), (gain < 0) ? "-" : "+", mag / 10,
+		    mag % 10);
+}
 
 static void print_ddc(const struct shell *sh)
 {
@@ -80,6 +101,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 		shell_print(sh, "Tuner gain:   auto");
 	}
 
+	print_if_agc_line(sh);
 	shell_print(sh, "Streamed:     %u transfers, %llu bytes", status.xfers,
 		    (unsigned long long)status.xfers * CONFIG_WELLE_SDR_XFER_SIZE);
 
@@ -131,7 +153,14 @@ static void print_fields(const struct shell *sh, const uint8_t *regs, bool pll_p
 	shell_print(sh, "Filter cal:   %u", f.filt_cal);
 	print_gain(sh, "LNA gain:", f.lna_manual, f.lna_idx, f.lna_gain);
 	print_gain(sh, "Mixer gain:", f.mixer_manual, f.mixer_idx, f.mixer_gain);
-	shell_print(sh, "VGA code:     %u", f.vga_code);
+	shell_print(sh, "RF AGC:       LNA index %u, mixer index %u (register 3)", f.agc_lna_idx,
+		    f.agc_mixer_idx);
+
+	if (f.vga_pin) {
+		shell_print(sh, "VGA:          IF_AGC pin");
+	} else {
+		shell_print(sh, "VGA:          register, code %u", f.vga_code);
+	}
 
 	if (!pll_programmed) {
 		shell_print(sh, "PLL:          not programmed yet");
@@ -628,6 +657,82 @@ static int cmd_testsig(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_agc(const struct shell *sh, size_t argc, char **argv)
+{
+	struct if_agc_stats agc;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	print_if_agc_line(sh);
+	if_agc_get_stats(&agc);
+
+	shell_print(sh, "Switch:       host RTL AGC %s", agc.active ? "on" : "off");
+	shell_print(sh, "PWM:          %u of %u counts on PA15", agc.counts, IF_AGC_CTL_PERIOD);
+	shell_print(sh, "Fixed:        %u mV (range %u to %u mV)", agc.fixed_mv,
+		    CONFIG_WELLE_SDR_IF_AGC_MIN_MV, CONFIG_WELLE_SDR_IF_AGC_MAX_MV);
+	shell_print(sh, "Target:       MAD %u.%02u codes", agc.target_q4 / 16U,
+		    (agc.target_q4 % 16U) * 100U / 16U);
+
+	if (!agc.active) {
+		return 0;
+	}
+
+	shell_print(sh, "Level:        MAD %u.%02u codes, mean %u, %u ppm clipped",
+		    agc.mad_q4 / 16U, (agc.mad_q4 % 16U) * 100U / 16U, agc.dc, agc.clip_ppm);
+	shell_print(sh, "Updates:      %u", agc.updates);
+
+	return 0;
+}
+
+static int cmd_agc_fixed(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long mv;
+	int err = 0;
+
+	ARG_UNUSED(argc);
+
+	mv = shell_strtoul(argv[1], 0, &err);
+	if (err != 0 || mv > UINT32_MAX) {
+		shell_error(sh, "Invalid number");
+		return -EINVAL;
+	}
+
+	err = if_agc_set_fixed_mv((uint32_t)mv);
+	if (err != 0) {
+		shell_error(sh, "Out of range: %u to %u mV", CONFIG_WELLE_SDR_IF_AGC_MIN_MV,
+			    CONFIG_WELLE_SDR_IF_AGC_MAX_MV);
+		return err;
+	}
+
+	print_if_agc_line(sh);
+
+	return 0;
+}
+
+static int cmd_agc_target(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long codes;
+	int err = 0;
+
+	ARG_UNUSED(argc);
+
+	codes = shell_strtoul(argv[1], 0, &err);
+	if (err != 0 || codes == 0UL || codes > AGC_TARGET_MAX) {
+		shell_error(sh, "Invalid target: 1 to %lu codes", AGC_TARGET_MAX);
+		return -EINVAL;
+	}
+
+	return if_agc_set_target((uint16_t)(codes * 16UL));
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_agc,
+	SHELL_CMD_ARG(fixed, NULL, "Voltage while the loop is off: <mV>", cmd_agc_fixed, 2, 0),
+	SHELL_CMD_ARG(target, NULL, "Level the loop aims at, MAD of the ADC codes: <codes>",
+		      cmd_agc_target, 2, 0),
+	SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tuner,
 	SHELL_CMD_ARG(regs, NULL, "Dump and decode the R820T2 registers, [live] reads the chip",
 		      cmd_tuner_regs, 1, 1),
@@ -641,6 +746,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_welle_sdr,
 	SHELL_CMD_ARG(status, NULL, "Show USB, stream and tuner state", cmd_status, 1, 0),
 	SHELL_CMD(tuner, &sub_tuner, "R820T2 tuner commands", NULL),
 	SHELL_CMD(adc, &sub_adc, "AD9280 ADC capture commands", NULL),
+	SHELL_CMD_ARG(agc, &sub_agc, "IF AGC on the R820T2 IF_AGC pin (PA15)", cmd_agc, 1, 0),
 	SHELL_CMD_ARG(testsig, NULL, "Square wave on PA7 for AD IN: <hz> or off", cmd_testsig,
 		      2, 0),
 	SHELL_CMD_ARG(demod, NULL, "Dump demod registers: <page> <reg> [len]", cmd_demod, 3, 1),

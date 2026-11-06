@@ -24,6 +24,7 @@
 #include <dvp_adc.h>
 
 #include "ddc.h"
+#include "if_agc.h"
 #include "rtl2832u.h"
 #include "sample_src.h"
 #include "si_fmt.h"
@@ -251,6 +252,8 @@ static void producer_block(struct producer *p, const uint8_t *in, size_t len)
 {
 	size_t pos = 0U;
 
+	if_agc_process(in, len, p->plan.adc_rate);
+
 	while (pos < len) {
 		size_t space;
 		size_t n;
@@ -316,6 +319,7 @@ static void producer_run(struct producer *p)
 		stats.load_pct = 0U;
 	}
 
+	if_agc_restart();
 	producer_replan(p);
 
 	while (atomic_get(&run) != 0 && atomic_get(&test_mode) == 0) {

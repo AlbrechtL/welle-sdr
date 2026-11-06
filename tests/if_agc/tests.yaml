@@ -1,0 +1,7 @@
+tests:
+  welle_sdr.if_agc:
+    tags: welle_sdr
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
