@@ -142,3 +142,183 @@ that read.
 comes from a tune during open, before the requested frequency is set, where librtlsdr programs
 the PLL for the IF alone, outside the VCO range. The requested frequency locks. A real dongle
 gets the same request from librtlsdr.
+
+## ADC module wiring (AD9280)
+
+The AD9280 ADC module (`docs/ad9280-adc-module.md`) is meant to sample the R820T2 IF. The
+CH32V307 digital video port (DVP) captures its 8-bit parallel data: it latches D0..D7 on
+DVP_PCLK and writes them to SRAM by DMA, at up to 144 MHz pixel clock (datasheet table
+4-37). The MCU generates DCLK with TIM1 and feeds it both to the ADC and back into
+DVP_PCLK. Status: wiring plan only. The firmware has no capture code yet
+(`src/sample_src.c` still produces dummy data), and the connection has not been tested.
+
+Pins are taken from the
+[CH32V303/305/307 datasheet](https://ch32-riscv-ug.github.io/CH32V307/datasheet_en/CH32V20x_30xDS0.PDF)
+(table 3-4) and the
+[EVT board schematic](https://github.com/openwch/ch32v307/blob/main/SCHPCB/CH32V307V-R1-1v0/SCH_PCB/CH32V307V-R1.pdf).
+
+### Pin assignment
+
+Module J2 to the EVT board:
+
+| Module J2 | Signal | EVT pin | MCU function            | Notes                                     |
+|-----------|--------|---------|-------------------------|-------------------------------------------|
+| 1         | +5V    | 5V      | -                       | See "Power and ground"                    |
+| 2         | GND    | GND     | -                       |                                           |
+| 3         | DB0    | PA9     | DVP_D0                  | USART1_TX by default, see modifications   |
+| 4         | DB1    | PA10    | DVP_D1                  | USART1_RX by default, see modifications   |
+| 5         | DB2    | PC8     | DVP_D2                  | Ethernet TXP by default, remove R7        |
+| 6         | DB3    | PC9     | DVP_D3                  | Ethernet TXN by default, remove R7        |
+| 7         | DB4    | PC11    | DVP_D4                  |                                           |
+| 8         | DB5    | PB3     | DVP_D5 (remapped)       | See "DVP_D5 and USBHS"                    |
+| 9         | DB6    | PB8     | DVP_D6                  |                                           |
+| 10        | DB7    | PB9     | DVP_D7                  |                                           |
+| 11        | DCLK   | PA6     | DVP_PCLK, see below     | Variant A: PA6; variant B: PA8            |
+
+### Clock and sync signals (PCLK, HSYNC, VSYNC)
+
+The DVP is made for cameras, which deliver a pixel clock, a line signal and a frame signal
+together with the data. On the DVP these are inputs: DVP_PCLK (PA6), DVP_HSYNC (PA4) and
+DVP_VSYNC (PA5). The DVP latches data on PCLK, stores it only while HSYNC is active and
+starts a frame on VSYNC. The AD9280 delivers none of them: it needs DCLK from outside and
+has no line or frame signals. So the MCU has to generate all three and the DVP has to read
+them back. How the firmware frames the stream (row length, timer or GPIO driven sync) is
+not decided yet; both variants leave HSYNC and VSYNC under firmware control.
+
+Variant A (no jumper wires, untested, try first): the pins drive their own DVP inputs.
+
+| Pin | Configured as                      | Function                                     |
+|-----|------------------------------------|----------------------------------------------|
+| PA6 | TIM3_CH1 PWM output                | DCLK to module J2 pin 11, read back as DVP_PCLK |
+| PA4 | GPIO push-pull output              | DVP_HSYNC                                    |
+| PA5 | GPIO push-pull output              | DVP_VSYNC                                    |
+
+On STM32-style GPIO, which the CH32V307 follows, the input buffer stays enabled while a pin
+is an output or an alternate function output, so peripherals on that pin see the driven
+level. Whether the DVP reads PCLK, HSYNC and VSYNC from the pad in that state is not
+documented for the CH32V307 and not tested. TIM3 is on APB1, which runs undivided at
+144 MHz, so it reaches the same DCLK rates as TIM1. Pinctrl: `TIM3_CH1_PA6_0`.
+
+Test: drive PA4/PA5 and the PA6 clock, enable the DVP with its frame interrupts, and check
+that frame start and row done interrupts arrive and that the DMA buffer fills with data.
+With AD IN at a fixed voltage the buffer must hold a constant code. If no interrupts
+arrive, the DVP does not see its own pins driven, and variant B is needed.
+
+Variant B (fallback, three jumper wires on the EVT board): other pins generate the signals
+and the DVP pins stay plain inputs.
+
+| From | To   | Function                                                        |
+|------|------|-----------------------------------------------------------------|
+| PA8  | PA6  | DCLK (TIM1_CH1 PWM output) into DVP_PCLK                        |
+| PA0  | PA4  | DVP_HSYNC, driven by firmware (PA0 is also TIM2_CH1)            |
+| PA1  | PA5  | DVP_VSYNC, driven by firmware (PA1 is also TIM2_CH2)            |
+
+Module J2 DCLK then goes to PA8 instead of PA6. Pinctrl: `TIM1_CH1_PA8_0`.
+
+The tuner (PB10, PB11), USBHS (PB6, PB7) and the LED1 jumper (PD0) are not affected. PB3,
+PB8, PB9, PC11 and PA0..PA8 go only to the EVT pin headers.
+
+### Board modifications on the EVT board
+
+Two changes free the pins for DB0..DB3. Both are reversible.
+
+#### 1. Console from USART1 (PA9/PA10) to USART2 (PA2/PA3)
+
+DB0 and DB1 need PA9 and PA10, which carry the USART1 console to the WCH-Link. The
+connection runs through J2 on the EVT board: the 2 x 7 pin header between the WCH-Link
+(CH549, USB-C P9) and the CH32V307, block "SWD&UART" in the schematic. Odd pins are the
+WCH-Link side, even pins the CH32V307 side; a jumper connects each pair:
+
+| EVT J2 pins | WCH-Link side (odd) | CH32V307 side (even) | Jumper                      |
+|-------------|---------------------|----------------------|-----------------------------|
+| 1-2         | 5V                  | 5V                   | not needed                  |
+| 3-4         | UART0_RX (RX0)      | TX, to PA9           | remove                      |
+| 5-6         | UART0_TX (TX0)      | RX, to PA10          | remove                      |
+| 7-8         | GND                 | GND                  | not needed                  |
+| 9-10        | CLK0                | CLK, to PA14 (SWCLK) | keep, needed for flashing   |
+| 11-12       | DIO0                | DIO, to PA13 (SWDIO) | keep, needed for flashing   |
+| 13-14       | 3V3                 | 3V3                  | not needed                  |
+
+Steps:
+
+1. Remove the jumpers 3-4 and 5-6. PA9 and PA10 are then free for DB0 and DB1.
+2. Wire EVT J2 pin 3 (WCH-Link RX) to PA2 (USART2_TX) and EVT J2 pin 5 (WCH-Link TX) to
+   PA3 (USART2_RX). The console stays on the same `/dev/ttyACM0` at 115200 baud.
+3. Set `zephyr,console` and `zephyr,shell-uart` to `&usart2` in the app overlay, with
+   pinctrl `USART2_TX_PA2_0` / `USART2_RX_PA3_0` (not done yet). Until then the console is
+   silent with the jumpers removed. Flashing is not affected.
+
+To go back to USART1, refit the two jumpers and remove the two wires.
+
+#### 2. Ethernet off PC8/PC9
+
+DB2 and DB3 need PC8 and PC9, which are the TXP/TXN pins of the built-in 10 Mbit/s Ethernet
+PHY. They go through R7, a 4 x 0 Ohm resistor array (block "ETH" in the schematic), to the
+transmit winding of the transformer in the RJ45 jack P2. The center tap of that winding
+is on 3.3 V. With R7 fitted, PC8 and PC9 are pulled to 3.3 V and shorted to each other
+through the winding, so the ADC cannot drive them.
+
+Steps:
+
+1. Remove R7, next to the RJ45 jack P2. It also carries RXP/RXN (PC6/PC7), which this
+   wiring does not use.
+2. The Ethernet port no longer works; the app does not use it. Solder R7 back (or bridge
+   its four pads) to restore it.
+
+### DVP_D5 and USBHS
+
+DVP_D5 defaults to PB6, which is also USBHS_DM, the USB data line this app uses. Datasheet
+note: DVP_D5 moves to PB3 automatically when DVPEN (bit 13) and USBHSEN (bit 11) in
+RCC_HBPCENR are set and RB_UC_RST_SIE (bit 2) in R8_USB_CTRL is 0, that is, while both
+peripherals are clocked and the USBHS controller is out of reset. This holds only for chips
+whose lot number has a fifth-from-last digit greater than 1 or a sixth-from-last digit
+other than 0. On an older chip the DVP cannot be used together with USBHS, and the capture
+needs a different path.
+
+The CH32V307 on the board used here has lot number 31452ff12: fifth from last is 2 (greater
+than 1) and sixth from last is 5 (not 0), so DVP_D5 is on PB3 while USBHS runs. Check the
+lot number again when using another board.
+
+### Clock and latch edge
+
+- DCLK is a timer PWM output: TIM3_CH1 on PA6 (variant A) or TIM1_CH1 on PA8 (variant B).
+  This is option A in "Sample clock (DCLK)" in `docs/ad9280-adc-module.md`, which covers
+  the choice of rate. Both timers run at 144 MHz; even dividers give 50 % duty, for example
+  8 MHz (144 / 18) or at most 24 MHz (144 / 6) within the 14.7 ns pulse width limit.
+- The DVP latches on DVP_PCLK, which carries DCLK itself (variant A) or DCLK fed back
+  through the PA8-PA6 jumper (variant B), so the capture follows the clock whatever its
+  source. With an external clock (options B to D), connect it to module J2 DCLK and PA6
+  and use neither timer output.
+- The ADC outputs a new word after each rising edge, valid at most 25 ns (t_OD) later.
+  Below 20 MHz, latch on the falling edge (DVP PCLK polarity inverted): at 8 MHz the word
+  is then stable for 37.5 ns before the edge, against the DVP setup time of 2.5 ns.
+- From 20 MHz to 24 MHz the falling edge falls into the output transition. Latch on the
+  rising edge instead, which reads the word output after the previous edge: setup margin
+  is the period minus 25 ns (16.7 ns at 24 MHz). Hold then depends on how long the old word
+  stays after the edge (not checked against the datasheet) against the DVP hold time of
+  1 ns. Verify with a scope or logic analyzer before relying on it.
+- The DVP writes one byte per DCLK cycle into SRAM, 8 MB/s at 8 MHz. Mixing and decimation
+  to the host rate run on the MCU.
+
+### Logic levels
+
+- PA9, PA10, PC8, PC9, PC11, PB3, PB8 and PB9 are 5 V tolerant (FT) inputs, so the data
+  lines are safe even if the module drives them from a 5 V DRVDD. PA4, PA5 and PA6 are not
+  5 V tolerant; they are driven only by the MCU at 3.3 V.
+- DCLK from the MCU swings 0 V to 3.3 V. The CLK threshold is AVDD / 2: with AVDD = 3.3 V
+  the pin drives CLK directly; with AVDD = 5 V (not traced) the threshold is 2.5 V, and an
+  HCT/ACT buffer from the module's 5 V belongs between the timer pin and DCLK. PA6 then
+  stays on the 3.3 V side of the buffer, and the buffer delay (several ns) shifts the ADC
+  clock against the DVP latch edge.
+
+### Power and ground
+
+- Feed module J2 pin 1 from the EVT board's 5 V, which comes from USB through a 500 mA
+  fuse. The module's MC34063A inverter draws its input current from this rail; measure the
+  module's supply current before relying on the fuse margin.
+- Module J2 has a single GND pin for nine fast signals. Add a second ground wire from
+  module J1 GND to the EVT board GND.
+- Keep the wires short (10 cm or less) and of equal length, and run DCLK next to a ground
+  wire. A 22 Ohm to 47 Ohm series resistor at the timer pin (PA6 or PA8) damps ringing on
+  DCLK. In variant A, place it on the module side of PA6, so the DVP input sees the
+  undamped pin.
