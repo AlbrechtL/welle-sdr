@@ -36,17 +36,20 @@ configures the device, and blinks at 5 Hz while samples are streamed.
 
 ## Tuner wiring
 
-| R820T2 | CH32V307V-EVT-R1 |
-|--------|------------------|
-| SCL    | PB10             |
-| SDA    | PB11             |
-| GND    | GND              |
-| VCC    | 3.3 V            |
+| R820T2                     | CH32V307V-EVT-R1 |
+|----------------------------|------------------|
+| SCL                        | PB10             |
+| SDA                        | PB11             |
+| IF_AGC (RC low-pass input) | PA15             |
+| GND                        | GND              |
+| VCC                        | 3.3 V            |
 
 - SCL and SDA need external pull-ups to 3.3 V (4.7 kOhm), unless the tuner board has them.
 - GND of the tuner board must be connected to GND of the EVT board.
 - The R820T2 needs its 28.8 MHz crystal or reference clock.
 - 7-bit I2C address 0x1a (librtlsdr uses the 8-bit form 0x34), 100 kHz.
+- PA15 drives the RC low-pass in front of the tuner's IF_AGC pin (pin 14) with a PWM, see
+  "IF AGC". Without the low-pass the VGA sees the 3.3 V square wave.
 
 Without a responding tuner the host reports `No supported tuner found`, as a real dongle
 without a tuner would.
@@ -133,6 +136,61 @@ for the programmed indices. After a host tool closes the device, librtlsdr puts 
 standby: the PLL reads unlocked and the gains read as auto.
 
 While samples stream, the shell can drop typed characters; type slowly or paste line by line.
+
+## IF AGC
+
+The R820T2 has an RF AGC loop for the LNA and the mixer, but none for the IF VGA. librtlsdr
+sets the VGA to a fixed code (26.5 dB in auto gain mode, 16.3 dB in manual mode), so the
+level at the 8-bit ADC follows the signal. The firmware closes that loop itself: register
+0x0c bit 4 makes the VGA gain follow the voltage on the IF_AGC pin (0.6 V to 2.5 V gives
+about -1.5 dB to +45.5 dB in the datasheet), and a PWM on PA15 sets that voltage through
+the RC low-pass on the tuner board.
+
+- PWM: TIM2_CH1 on PA15 (TIM2 partial remap 1), 144 MHz / 4096 = 35.2 kHz, 12 bits. TIM2 is
+  programmed directly in `src/if_agc.c`, like TIM3 for the test signal.
+- The host's RTL AGC switch turns the loop on (`rtlsdr_set_agc_mode()`, rtl_tcp command 0x08:
+  demod page 0 reg 0x19 bit 5). librtlsdr writes 0x05 to that register on every open, so
+  each session starts with the loop off. The switch is otherwise unused, as the RTL2832U's
+  digital AGC is not emulated.
+- With the loop on, the firmware sets 0x0c bit 4 in every host write, so librtlsdr's gain
+  changes do not take the VGA back. LNA and mixer gain stay with the host (manual or RF AGC).
+  With the loop off, the host's last 0x0c value is written back and PA15 returns to the fixed
+  voltage (`CONFIG_WELLE_SDR_IF_AGC_FIXED_MV`, 1.55 V, about +22 dB). PA15 runs from boot, so
+  the pin never floats while librtlsdr's register init selects pin control.
+- Loop: every 16th ADC sample (`CONFIG_WELLE_SDR_IF_AGC_STRIDE`) over 20 ms
+  (`CONFIG_WELLE_SDR_IF_AGC_RATE_HZ`) gives the mean absolute deviation (MAD) of the codes
+  from their mean. More than 1 in 1024 samples at code 0 or 255 steps the gain down by 3 dB.
+  Otherwise the gain moves by half the level error in dB, at most 3 dB, with a dead band of
+  1 dB. The target MAD is 24 codes (`CONFIG_WELLE_SDR_IF_AGC_TARGET`), an RMS of about 30
+  codes and about 12 dB below full scale. The voltage stays within
+  `CONFIG_WELLE_SDR_IF_AGC_MIN_MV` and `_MAX_MV`.
+- PA15 is a floating input during every tuner I2C transfer and returns to the PWM afterwards;
+  the low-pass capacitor holds the voltage meanwhile. The PWM edges couple into the
+  bit-banged I2C on the jumper wiring: with PA15 always driven, 2 to 5 of 10 standalone tunes
+  failed with a NACK and librtlsdr reported `i2c wr failed` on almost every open. With a
+  constant level on PA15, and with the floating, 0 failures (30 tunes, 8 librtlsdr opens).
+  The loop level does not change while the shell reads the registers 45 times during
+  streaming. Keep the PA15 wire away from SCL and SDA and run a ground wire next to it.
+- Measured on 5C (178.352 MHz) with an antenna, through the module front end: PA15 from 0 V
+  to 3.3 V takes the ADC signal from 3 to 64 codes peak to peak (standalone tune, wide IF
+  filter). With librtlsdr at 1 MS/s the level is a MAD of 1.6 codes at 2500 mV, so the
+  default target is out of reach; with `welle-sdr agc target 1` the loop settles at 2.0 V
+  to 2.35 V with a MAD of 0.9 to 1.1 codes.
+- The step size assumes the datasheet's linear curve of 47 dB over 1.9 V and a low-pass that
+  settles within 20 ms. Neither is measured on this tuner board yet.
+- Through the AD9280 module's front end (`V_adc = 0.99 V + V_in / 5.14`, see "ADC test") the
+  tuner's 2 Vpp maximum IF reaches about 50 codes peak to peak, a MAD of about 16 for a sine.
+  The default target is then out of reach and the loop stays at the upper end of the range.
+  Lower the target to about 8 codes with this path, or feed the ADC directly
+  (`docs/ad9280-adc-module.md`, "Limits of this path").
+
+`welle-sdr agc` shows the mode, the voltage and the approximate VGA gain, the PWM compare
+value, and with the loop on the measured MAD, mean code, clip rate and update count.
+`welle-sdr agc fixed <mV>` sets the voltage used while the loop is off, to measure the
+voltage to gain curve. `welle-sdr agc target <codes>` sets the target MAD. `welle-sdr status` shows the IF AGC line,
+and `welle-sdr tuner regs` shows the VGA mode and the gains the RF AGC picked (register 3).
+
+The loop's arithmetic has host tests: `west twister -p native_sim -T apps/welle-sdr/tests/if_agc`.
 
 ## PLL lock with librtlsdr
 

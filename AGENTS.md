@@ -46,6 +46,14 @@ existing files.
   per-sample reference: keep it in sync when the arithmetic changes.
 - `src/testsig.c`: square wave on PA7 (TIM3_CH2) for AD IN, registers programmed directly
   (Zephyr's `pwm_wch_gptm.c` does not build with a GPTM and an ADTM instance enabled).
+- `src/if_agc.c`: PWM on PA15 (TIM2_CH1, partial remap 1, programmed directly for the same
+  reason) into the tuner board's IF_AGC low-pass. Node `if_agc` (`welle,if-agc`, binding in
+  `dts/bindings/`). The loop runs in the producer thread from `producer_block()` while the
+  host's RTL AGC is on, and only writes `CH1CVR`. The PWM edges break the bit-banged tuner
+  I2C, so `r820t2.c` floats PA15 around every transfer with `if_agc_bus_hold()`; keep that
+  call around any new tuner bus access. `r820t2_set_vga_pin_mode()` keeps register
+  0x0c bit 4 set in host writes meanwhile. `src/if_agc_ctl.c` holds the arithmetic (pure C,
+  host tests in `tests/if_agc`).
 - `tools/iq_peaks.py`: strongest spectral lines of an `rtl_sdr` recording.
 - `src/welle_sdr_shell.c`: `welle-sdr` shell commands, using the accessors in
   `src/rtl2832u.h`, `src/r820t2.h` and `dvp_adc.h` (`welle-sdr adc ...`).
@@ -61,7 +69,8 @@ existing files.
   115200 baud (PA2 TX, PA3 RX, jumper wires from the WCH-Link header J2 pins 3/5; PA9/PA10
   are ADC data inputs, so `&usart1` is disabled in the overlay).
 - R820T2: SCL on PB10, SDA on PB11, GND, 3.3 V, external pull-ups to 3.3 V, 28.8 MHz crystal
-  on the tuner side. 7-bit address 0x1a.
+  on the tuner side. 7-bit address 0x1a. PA15 drives the RC low-pass on the tuner board's
+  IF_AGC pin.
 - The board LEDs are not routed to the SoC. The status LED needs a jumper wire from J3 LED1
   to PD0 (active low). The board dtsi disables the `leds` node; the app overlay enables it.
 - `west` is only available after `source ~/src/zephyrproject/.venv/bin/activate`.
@@ -103,7 +112,8 @@ existing files.
   SYS 2, TUN 3, ROM 4, IR 5, IIC 6. 2-byte register writes are big-endian.
 - Demod: `wValue = reg << 8 | 0x20`, page in `wIndex` bits 3..0. librtlsdr follows every demod
   write with a dummy read of page 0x0a reg 0x01.
-  - Page 0 reg 0x19: `0x03` test mode (counter output), `0x05` normal. Test is bit 1.
+  - Page 0 reg 0x19: `0x03` test mode (counter output), `0x05` normal, `0x25` normal with RTL
+    AGC (`rtlsdr_set_agc_mode()`). Test is bit 1, RTL AGC bit 5; RTL AGC turns on the IF AGC.
   - Page 1 reg 0x01 bit 3: I2C repeater to the tuner.
   - Page 1 regs 0x9f..0xa2: resampler ratio, big-endian, high half written first. Sample rate =
     28.8 MHz * 2^22 / ratio.
