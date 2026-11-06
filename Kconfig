@@ -13,9 +13,10 @@ config WELLE_SDR_XFER_SIZE
 
 config WELLE_SDR_XFER_COUNT
 	int "Number of bulk IN transfer buffers"
-	default 2
+	default 4
 	range 2 8
 	help
-	  Number of bulk IN transfers kept queued on the endpoint.
+	  Number of bulk IN transfers kept queued on the endpoint. The ADC
+	  paces the stream, so the buffers also absorb delays of the host.
 
 source "Kconfig.zephyr"

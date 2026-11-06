@@ -10,6 +10,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <zephyr/net_buf.h>
+
 #define RTL2832U_DEMOD_PAGES     5U
 #define RTL2832U_DEMOD_PAGE_SIZE 256U
 
@@ -51,5 +53,28 @@ void rtl2832u_get_status(struct rtl2832u_status *status);
  *	   not exist.
  */
 const uint8_t *rtl2832u_demod_regs(uint8_t page);
+
+/**
+ * @brief Allocate a bulk IN transfer buffer.
+ *
+ * The buffer holds CONFIG_WELLE_SDR_XFER_SIZE bytes. It is passed to
+ * rtl2832u_submit() or freed with net_buf_unref().
+ *
+ * @return Buffer, or NULL if all transfers are in flight.
+ */
+struct net_buf *rtl2832u_alloc_xfer(void);
+
+/**
+ * @brief Queue a filled transfer buffer on the bulk IN endpoint.
+ *
+ * Takes ownership of @p buf; it is freed if it cannot be queued.
+ *
+ * @param buf Buffer from rtl2832u_alloc_xfer().
+ *
+ * @retval 0 Queued.
+ * @retval -EAGAIN The host is not streaming.
+ * @retval -errno Endpoint error from usbd_ep_enqueue().
+ */
+int rtl2832u_submit(struct net_buf *buf);
 
 #endif /* WELLE_SDR_RTL2832U_H_ */

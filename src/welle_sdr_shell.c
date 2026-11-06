@@ -18,11 +18,41 @@
 
 #include "r820t2.h"
 #include "rtl2832u.h"
+#include "sample_src.h"
 #include "si_fmt.h"
 #include "testsig.h"
 
 /* Nominal VCO fine tune value, register 4 bits 5:4 */
 #define TUNER_VCO_FINE_NOMINAL 2U
+
+static void print_ddc(const struct shell *sh)
+{
+	struct sample_src_stats ddc;
+	char buf[SI_FMT_LEN];
+
+	sample_src_get_stats(&ddc);
+
+	if (!ddc.planned) {
+		shell_print(sh, "DDC:          %s, no plan", ddc.running ? "running" : "stopped");
+		return;
+	}
+
+	shell_print(sh, "DDC:          %s, IF %d Hz%s", ddc.running ? "running" : "stopped",
+		    ddc.if_freq, ddc.invert ? ", inverted" : "");
+	shell_print(sh, "ADC rate:     %s, decimation %u, residual %d Hz",
+		    si_fmt(buf, sizeof(buf), ddc.adc_rate, "S/s"), ddc.decim, ddc.residual_hz);
+
+	if (ddc.exact) {
+		shell_print(sh, "Output rate:  %s (exact)",
+			    si_fmt(buf, sizeof(buf), ddc.actual_rate, "S/s"));
+	} else {
+		shell_print(sh, "Output rate:  %s (%d ppm off the host rate)",
+			    si_fmt(buf, sizeof(buf), ddc.actual_rate, "S/s"), ddc.ppm_error);
+	}
+
+	shell_print(sh, "DDC load:     %u %% (estimated %u %%)", ddc.load_pct, ddc.est_load_pct);
+	shell_print(sh, "DDC output:   %u transfers, %u bytes dropped", ddc.xfers, ddc.dropped);
+}
 
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
@@ -38,7 +68,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "USB:          %s, %s", status.configured ? "configured" : "not configured",
 		    status.streaming ? "streaming" : "idle");
 	shell_print(sh, "Host driver:  %s", status.host_open ? "open" : "closed");
-	shell_print(sh, "Output:       %s", status.test_mode ? "test counter" : "I/Q tone");
+	shell_print(sh, "Output:       %s", status.test_mode ? "test counter" : "ADC I/Q");
 	shell_print(sh, "Sample rate:  %s", si_fmt(buf, sizeof(buf), status.sample_rate, "S/s"));
 	shell_print(sh, "Center freq:  %s", si_fmt(buf, sizeof(buf), status.center_freq, "Hz"));
 	shell_print(sh, "Tuner LO:     %s", si_fmt(buf, sizeof(buf), status.lo_freq, "Hz"));
@@ -52,6 +82,8 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 
 	shell_print(sh, "Streamed:     %u transfers, %llu bytes", status.xfers,
 		    (unsigned long long)status.xfers * CONFIG_WELLE_SDR_XFER_SIZE);
+
+	print_ddc(sh);
 
 	return 0;
 }

@@ -81,6 +81,11 @@ enum rtl_block {
 #define RTL_DEMOD_RSAMP_REG  0x9fU
 #define RTL_DEMOD_RSAMP_LEN  4U
 
+/* Demod page 1 reg 0x15 bit 0: spectrum inversion (librtlsdr: on for R820T, off in direct sampling) */
+#define RTL_DEMOD_INV_PAGE 1U
+#define RTL_DEMOD_INV_REG  0x15U
+#define RTL_DEMOD_INV_BIT  0x01U
+
 /* Demod page 1 regs 0x19..0x1b: IF frequency, 22-bit signed, big-endian */
 #define RTL_DEMOD_IF_PAGE 1U
 #define RTL_DEMOD_IF_REG  0x19U
@@ -134,9 +139,12 @@ struct rtl_data {
 	/* Value of xfers when streaming started */
 	uint32_t stream_start_xfers;
 	uint32_t sample_rate;
+	/* Class instance, for transfers submitted by the sample source */
+	struct usbd_class_data *c_data;
 };
 
 static void rtl_tuner_log_handler(struct k_work *work);
+static int32_t rtl_if_freq_signed(const struct rtl_data *const data);
 
 static K_WORK_DELAYABLE_DEFINE(rtl_tuner_log_work, rtl_tuner_log_handler);
 
@@ -152,6 +160,12 @@ static uint8_t rtl_get_bulk_in(struct usbd_class_data *const c_data)
 	return data->desc->if0_in_ep.bEndpointAddress;
 }
 
+static bool rtl_test_mode(const struct rtl_data *data)
+{
+	return (data->regs.demod[RTL_DEMOD_TEST_PAGE][RTL_DEMOD_TEST_REG] & RTL_DEMOD_TEST_BIT) != 0U;
+}
+
+/* Test mode: fill all free transfers with the counter; otherwise the sample source submits */
 static void rtl_stream_kick(struct usbd_class_data *const c_data)
 {
 	struct rtl_data *data = usbd_class_get_private(c_data);
@@ -160,7 +174,7 @@ static void rtl_stream_kick(struct usbd_class_data *const c_data)
 	struct net_buf *buf;
 	int err;
 
-	while (atomic_test_bit(&data->state, RTL_STATE_ENABLED) &&
+	while (rtl_test_mode(data) && atomic_test_bit(&data->state, RTL_STATE_ENABLED) &&
 	       atomic_test_bit(&data->state, RTL_STATE_RUNNING)) {
 		buf = net_buf_alloc(&rtl_ep_pool, K_NO_WAIT);
 		if (buf == NULL) {
@@ -192,12 +206,14 @@ static void rtl_stream_set_running(struct usbd_class_data *const c_data, const b
 			data->stream_start_xfers = (uint32_t)atomic_get(&data->xfers);
 			LOG_INF("Streaming started");
 			rtl_stream_kick(c_data);
+			sample_src_start();
 		}
 
 		return;
 	}
 
 	if (atomic_test_and_clear_bit(&data->state, RTL_STATE_RUNNING)) {
+		sample_src_stop();
 		LOG_INF("Streaming stopped after %u transfers, FIFO flushed",
 			(uint32_t)atomic_get(&data->xfers) - data->stream_start_xfers);
 
@@ -274,7 +290,12 @@ static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_
 
 	if (page == RTL_DEMOD_IF_PAGE && reg < RTL_DEMOD_IF_REG + RTL_DEMOD_IF_LEN &&
 	    reg + len > RTL_DEMOD_IF_REG) {
+		sample_src_set_if(rtl_if_freq_signed(data));
 		(void)k_work_reschedule(&rtl_tuner_log_work, RTL_TUNER_LOG_DELAY);
+	}
+
+	if (page == RTL_DEMOD_INV_PAGE && reg <= RTL_DEMOD_INV_REG && reg + len > RTL_DEMOD_INV_REG) {
+		sample_src_set_inversion((p[RTL_DEMOD_INV_REG] & RTL_DEMOD_INV_BIT) != 0U);
 	}
 }
 
@@ -504,6 +525,7 @@ static int rtl_init(struct usbd_class_data *const c_data)
 	memset(&data->regs, 0, sizeof(data->regs));
 	atomic_clear(&data->state);
 	data->sample_rate = 0U;
+	data->c_data = c_data;
 	/* A missing tuner is logged; the host sees it as a NACK on its probe */
 	(void)r820t2_init();
 
@@ -575,11 +597,10 @@ static struct rtl_data rtl_data = {
 };
 
 /* IF frequency in Hz; librtlsdr programs the negated IF */
-static uint32_t rtl_if_freq(const struct rtl_data *const data)
+static int32_t rtl_if_freq_signed(const struct rtl_data *const data)
 {
 	const uint8_t *p = &data->regs.demod[RTL_DEMOD_IF_PAGE][RTL_DEMOD_IF_REG];
 	int32_t raw = (int32_t)(((uint32_t)(p[0] & 0x3FU) << 16) | ((uint32_t)p[1] << 8) | p[2]);
-	int64_t if_freq;
 
 	/* Sign-extend the 22-bit value */
 	if ((raw & BIT(21)) != 0) {
@@ -587,7 +608,12 @@ static uint32_t rtl_if_freq(const struct rtl_data *const data)
 	}
 
 	/* IF = -raw * xtal / 2^22 */
-	if_freq = ((int64_t)-raw * (int64_t)RTL_XTAL_FREQ) / (int64_t)BIT64(22);
+	return (int32_t)(((int64_t)-raw * (int64_t)RTL_XTAL_FREQ) / (int64_t)BIT64(22));
+}
+
+static uint32_t rtl_if_freq(const struct rtl_data *const data)
+{
+	const int32_t if_freq = rtl_if_freq_signed(data);
 
 	return (if_freq > 0) ? (uint32_t)if_freq : 0U;
 }
@@ -612,6 +638,36 @@ void rtl2832u_get_status(struct rtl2832u_status *status)
 	} else {
 		status->center_freq = status->lo_freq;
 	}
+}
+
+struct net_buf *rtl2832u_alloc_xfer(void)
+{
+	return net_buf_alloc(&rtl_ep_pool, K_NO_WAIT);
+}
+
+int rtl2832u_submit(struct net_buf *buf)
+{
+	struct rtl_data *data = &rtl_data;
+	struct usbd_class_data *c_data = data->c_data;
+	struct udc_buf_info *bi;
+	int err;
+
+	if (c_data == NULL || !atomic_test_bit(&data->state, RTL_STATE_ENABLED) ||
+	    !atomic_test_bit(&data->state, RTL_STATE_RUNNING)) {
+		net_buf_unref(buf);
+		return -EAGAIN;
+	}
+
+	bi = udc_get_buf_info(buf);
+	bi->ep = rtl_get_bulk_in(c_data);
+
+	err = usbd_ep_enqueue(c_data, buf);
+	if (err != 0) {
+		LOG_ERR("Failed to enqueue bulk IN transfer (%d)", err);
+		net_buf_unref(buf);
+	}
+
+	return err;
 }
 
 const uint8_t *rtl2832u_demod_regs(uint8_t page)
