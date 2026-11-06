@@ -28,9 +28,16 @@ existing files.
   logs. Also the wiring checks, the bus scan and the standalone tune for the shell test.
 - `src/si_fmt.c`: `si_fmt()` formats frequencies and sample rates with k/M/G prefixes, all
   digits kept (`435.544958 MHz`), for the shell and the logs.
+- `modules/adc_dvp_wch/`: out-of-tree module with the AD9280 capture driver on the DVP
+  (`wch,dvp-adc` binding, `include/dvp_adc.h` API: start/stop, get/release block, stats).
+  Loaded through `ZEPHYR_EXTRA_MODULES` like the UDC module. Node `adc_dvp` in the overlay
+  (DVP at `0x50050000`, IRQ 86, clock `CH32V20X_V30X_CLOCK_DVP`, DCLK from `&pwm1` on PA8 with
+  `&tim1` prescaler 0, HSYNC/VSYNC from PA0/PA1). README "ADC test" lists the DVP behavior
+  the driver depends on (sync edges need a running PCLK, VSYNC before HSYNC, second block
+  interrupt without buffer switch under load).
 - `src/sample_src.c`: dummy sample source. This is the hook for the SDR signal path.
 - `src/welle_sdr_shell.c`: `welle-sdr` shell commands, using the accessors in
-  `src/rtl2832u.h` and `src/r820t2.h`.
+  `src/rtl2832u.h`, `src/r820t2.h` and `dvp_adc.h` (`welle-sdr adc ...`).
 - `src/status_led.c`: USB state on `led0`, polled every 50 ms from `rtl2832u_get_status()` and
   `usbd_is_suspended()`. Off while not configured or suspended (an unplug reads as a suspend),
   one blink and then on when the host configures the device (also after a resume), 5 Hz blink
@@ -213,4 +220,6 @@ existing files.
 - The stream is unpaced; `sample_src_set_rate()` receives the host's rate but ignores it.
 - The driver has not been tested with Linux `testusb` (loopback build) or with OUT endpoints
   other than EP0.
-- Later phases: replace the dummy sample source (the R820T2 IF output is not sampled).
+- Later phases: feed the ADC blocks into the stream instead of the dummy sample source (mix
+  the IF to baseband, decimate to the host rate). The capture runs, but nothing consumes it
+  except `welle-sdr adc capture`.

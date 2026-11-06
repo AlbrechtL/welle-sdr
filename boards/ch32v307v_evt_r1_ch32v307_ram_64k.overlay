@@ -5,7 +5,9 @@
  */
 
 #include <zephyr/dt-bindings/clock/ch32v20x_30x-clocks.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/pinctrl/ch32v20x_30x-pinctrl.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
 
 / {
 	/*
@@ -42,6 +44,27 @@
 			maximum-speed = "high-speed";
 			status = "okay";
 		};
+
+		/*
+		 * AD9280 ADC module on the DVP, wiring variant B (see README):
+		 * DCLK from TIM1_CH1 on PA8, jumper wires PA8-PA6 (PCLK),
+		 * PA0-PA4 (HSYNC), PA1-PA5 (VSYNC).
+		 */
+		adc_dvp: dvp@50050000 {
+			compatible = "wch,dvp-adc";
+			reg = <0x50050000 0x24>;
+			clocks = <&rcc CH32V20X_V30X_CLOCK_DVP>;
+			interrupt-parent = <&pfic>;
+			interrupts = <86>;
+			pwms = <&pwm1 0 PWM_NSEC(125) PWM_POLARITY_NORMAL>;
+			hsync-gpios = <&gpioa 0 GPIO_ACTIVE_HIGH>;
+			vsync-gpios = <&gpioa 1 GPIO_ACTIVE_HIGH>;
+			/* D0..D7, PCLK, HSYNC, VSYNC */
+			input-gpios = <&gpioa 9 0>, <&gpioa 10 0>, <&gpioc 8 0>, <&gpioc 9 0>,
+				      <&gpioc 11 0>, <&gpiob 3 0>, <&gpiob 8 0>, <&gpiob 9 0>,
+				      <&gpioa 6 0>, <&gpioa 4 0>, <&gpioa 5 0>;
+			status = "okay";
+		};
 	};
 };
 
@@ -59,6 +82,27 @@
 			bias-pull-up;
 		};
 	};
+
+	tim1_pwm_default: tim1_pwm_default {
+		group1 {
+			pinmux = <TIM1_CH1_PA8_0>;
+			output-high;
+			drive-push-pull;
+			slew-rate = "max-speed-50mhz";
+		};
+	};
+};
+
+/* ADC clock: TIM1 counts at the undivided 144 MHz, DCLK = 144 MHz / period */
+&tim1 {
+	prescaler = <0>;
+	status = "okay";
+};
+
+&pwm1 {
+	pinctrl-0 = <&tim1_pwm_default>;
+	pinctrl-names = "default";
+	status = "okay";
 };
 
 &usart2 {

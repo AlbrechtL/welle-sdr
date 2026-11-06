@@ -151,8 +151,9 @@ The AD9280 ADC module (`docs/ad9280-adc-module.md`) is meant to sample the R820T
 CH32V307 digital video port (DVP) captures its 8-bit parallel data: it latches D0..D7 on
 DVP_PCLK and writes them to SRAM by DMA, at up to 144 MHz pixel clock (datasheet table
 4-37). The MCU generates DCLK with TIM1 and feeds it both to the ADC and back into
-DVP_PCLK. Status: wiring plan only. The firmware has no capture code yet
-(`src/sample_src.c` still produces dummy data), and the connection has not been tested.
+DVP_PCLK. Status: the capture driver (`modules/adc_dvp_wch`) and the `welle-sdr adc` shell
+commands implement variant B below, see "ADC test". The USB stream still carries dummy data
+(`src/sample_src.c`).
 
 Pins are taken from the
 [CH32V303/305/307 datasheet](https://ch32-riscv-ug.github.io/CH32V307/datasheet_en/CH32V20x_30xDS0.PDF)
@@ -184,8 +185,8 @@ together with the data. On the DVP these are inputs: DVP_PCLK (PA6), DVP_HSYNC (
 DVP_VSYNC (PA5). The DVP latches data on PCLK, stores it only while HSYNC is active and
 starts a frame on VSYNC. The AD9280 delivers none of them: it needs DCLK from outside and
 has no line or frame signals. So the MCU has to generate all three and the DVP has to read
-them back. How the firmware frames the stream (row length, timer or GPIO driven sync) is
-not decided yet; both variants leave HSYNC and VSYNC under firmware control.
+them back. The driver holds both active for the whole capture and runs the DVP in JPEG mode,
+in which it stores a continuous byte stream in fixed-size DMA blocks; see "ADC test".
 
 Variant A (no jumper wires, untested, try first): the pins drive their own DVP inputs.
 
@@ -325,3 +326,49 @@ lot number again when using another board.
   wire. A 22 Ohm to 47 Ohm series resistor at the timer pin (PA6 or PA8) damps ringing on
   DCLK. In variant A, place it on the module side of PA6, so the DVP input sees the
   undamped pin.
+
+## ADC test
+
+The capture driver is the out-of-tree module `modules/adc_dvp_wch` (compatible
+`wch,dvp-adc`, node `adc_dvp` in the board overlay, wiring variant B). The DVP runs in JPEG
+mode: it writes the samples alternately into two DMA buffers of
+`CONFIG_ADC_DVP_WCH_BLOCK_SIZE` bytes (default 2048) and raises an interrupt per block. A
+ring of `CONFIG_ADC_DVP_WCH_BLOCK_COUNT` blocks (default 4) holds the completed blocks until
+the consumer releases them; if it is too slow, the oldest block is reused (overrun).
+
+Shell commands:
+
+- `welle-sdr adc start [rate_hz]`: start the capture, default 8 MS/s. The rate must be 144 MHz
+  divided by an even number of at least 6: 24, 18, 14.4, 12, 9, 8 MS/s and lower. The DVP
+  latches on the falling DCLK edge below 20 MS/s, on the rising edge above.
+- `welle-sdr adc stop`
+- `welle-sdr adc status`: blocks, overruns, FIFO overflows, frame starts, spurious block
+  interrupts and whether the guard area after the ring is intact.
+- `welle-sdr adc capture [blocks]`: take 1 to 64 blocks (default 4) and print a hex dump of the
+  first 32 bytes, min/max/mean, the most frequent codes and the statistics. Starts and stops
+  the capture at 8 MS/s if it is not running.
+
+Expected codes with AD IN at a fixed voltage, if the front end maps +/-5 V to the ADC's
+0 V to 2 V (see `docs/ad9280-adc-module.md`): about 0x80 at 0 V and about 0xD4 at 3.3 V,
+a constant code within a few LSB.
+
+Measured without the ADC module (data lines open, DCLK looped back through the PA8-PA6
+jumper):
+
+- All codes read 0x0C (DB2/DB3 on PC8/PC9 float high with R7 removed).
+- 8, 18 and 24 MS/s: the block count matches the rate, no FIFO overflows, every block fully
+  written and the guard intact (`COL_NUM` counts bytes).
+- `rtl_test` streaming is unaffected by a running 24 MS/s capture (0 lost, about 2.34 MS/s).
+- `adc capture` reports about 63 overruns: the hex dump of the first block takes longer than
+  the ring holds. The blocks after it are contiguous.
+
+DVP behavior found while testing, handled in the driver:
+
+- VSYNC and HSYNC are sampled with PCLK. TIM1 starts with the reset period 0xFFFF, and the
+  new period is preloaded, so PCLK only runs after up to 455 us; the driver waits 1 ms after
+  starting the clock and checks that the DVP saw the frame start.
+- Data is stored only after HSYNC goes active inside the frame; an HSYNC that is already
+  active at the frame start does not count. The driver raises VSYNC first, then HSYNC.
+- While the CPU is busy, the block interrupt can fire a second time for the same block, with
+  no buffer switch until the next block. The driver takes a block as complete only when
+  `RB_DVP_BUF_TOG` shows the switch and counts the others as spurious.

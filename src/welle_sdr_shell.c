@@ -4,14 +4,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/* Shell commands to inspect the emulator state and test the R820T2 tuner */
+/* Shell commands to inspect the emulator state, test the R820T2 tuner and the ADC */
 
 #include <errno.h>
 #include <string.h>
 
+#include <zephyr/device.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/iterable_sections.h>
 #include <zephyr/sys/util.h>
+
+#include <dvp_adc.h>
 
 #include "r820t2.h"
 #include "rtl2832u.h"
@@ -330,6 +333,229 @@ static int cmd_demod(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* Default ADC sample rate: 144 MHz / 18 */
+#define ADC_DEFAULT_RATE_HZ 8000000U
+#define ADC_BLOCK_TIMEOUT   K_MSEC(100)
+#define ADC_CAPTURE_DEFAULT 4UL
+#define ADC_CAPTURE_MAX     64UL
+#define ADC_DUMP_LEN        32U
+#define ADC_TOP_CODES       4U
+/* The driver fills its ring with this byte at start */
+#define ADC_FILL_PATTERN    0x55U
+
+static const struct device *const adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc_dvp));
+
+static int adc_start(const struct shell *sh, uint32_t rate)
+{
+	char buf[SI_FMT_LEN];
+	int err;
+
+	if (!device_is_ready(adc_dev)) {
+		shell_error(sh, "ADC capture device not ready");
+		return -ENODEV;
+	}
+
+	err = dvp_adc_start(adc_dev, rate);
+	if (err == -EINVAL) {
+		shell_error(sh, "Rate not reachable: 144 MHz / even divider >= 6 "
+				"(24, 18, 14.4, 12, 9, 8 MHz, ...)");
+	} else if (err == -EALREADY) {
+		shell_error(sh, "Already running");
+	} else if (err != 0) {
+		shell_error(sh, "Start failed (err %d)", err);
+	} else {
+		shell_print(sh, "Capture running at %s", si_fmt(buf, sizeof(buf), rate, "S/s"));
+	}
+
+	return err;
+}
+
+static void adc_print_stats(const struct shell *sh)
+{
+	char buf[SI_FMT_LEN];
+	struct dvp_adc_stats stats;
+
+	dvp_adc_get_stats(adc_dev, &stats);
+
+	if (stats.running) {
+		shell_print(sh, "Running:        yes, %s", si_fmt(buf, sizeof(buf), stats.rate, "S/s"));
+	} else {
+		shell_print(sh, "Running:        no");
+	}
+
+	shell_print(sh, "Blocks:         %u (%u bytes each)", stats.blocks,
+		    CONFIG_ADC_DVP_WCH_BLOCK_SIZE);
+	shell_print(sh, "Overruns:       %u", stats.overruns);
+	shell_print(sh, "FIFO overflows: %u", stats.fifo_overflows);
+	shell_print(sh, "Frame starts:   %u", stats.frame_starts);
+	shell_print(sh, "Spurious IRQs:  %u", stats.spurious);
+	shell_print(sh, "Guard:          %s",
+		    stats.guard_intact ? "intact" : "overwritten (DMA wrote past a block)");
+}
+
+static int cmd_adc_start(const struct shell *sh, size_t argc, char **argv)
+{
+	unsigned long rate = ADC_DEFAULT_RATE_HZ;
+	int err = 0;
+
+	if (argc > 1) {
+		rate = shell_strtoul(argv[1], 0, &err);
+		if (err != 0 || rate > UINT32_MAX) {
+			shell_error(sh, "Invalid number");
+			return -EINVAL;
+		}
+	}
+
+	return adc_start(sh, (uint32_t)rate);
+}
+
+static int cmd_adc_stop(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (dvp_adc_stop(adc_dev) != 0) {
+		shell_error(sh, "Not running");
+		return -EALREADY;
+	}
+
+	return 0;
+}
+
+static int cmd_adc_status(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	adc_print_stats(sh);
+
+	return 0;
+}
+
+/* Print the most frequent codes; clears their histogram entries */
+static void adc_print_top_codes(const struct shell *sh, uint32_t *hist, uint32_t total)
+{
+	for (uint32_t k = 0U; k < ADC_TOP_CODES; k++) {
+		uint32_t best = 0U;
+
+		for (uint32_t code = 1U; code < 256U; code++) {
+			if (hist[code] > hist[best]) {
+				best = code;
+			}
+		}
+
+		if (hist[best] == 0U) {
+			break;
+		}
+
+		shell_print(sh, "  0x%02x (%3u): %u (%u.%u %%)", best, best, hist[best],
+			    (uint32_t)((uint64_t)hist[best] * 100U / total),
+			    (uint32_t)((uint64_t)hist[best] * 1000U / total % 10U));
+		hist[best] = 0U;
+	}
+}
+
+static int cmd_adc_capture(const struct shell *sh, size_t argc, char **argv)
+{
+	/* Code histogram, too large for the shell stack */
+	static uint32_t hist[256];
+	struct dvp_adc_stats stats;
+	unsigned long blocks = ADC_CAPTURE_DEFAULT;
+	const uint8_t *data;
+	uint64_t sum = 0U;
+	uint32_t total = 0U;
+	uint8_t min = UINT8_MAX;
+	uint8_t max = 0U;
+	size_t tail = 0U;
+	bool started = false;
+	size_t len;
+	int err = 0;
+
+	if (argc > 1) {
+		blocks = shell_strtoul(argv[1], 0, &err);
+		if (err != 0 || blocks == 0UL || blocks > ADC_CAPTURE_MAX) {
+			shell_error(sh, "Block count 1..%lu", ADC_CAPTURE_MAX);
+			return -EINVAL;
+		}
+	}
+
+	dvp_adc_get_stats(adc_dev, &stats);
+	if (!stats.running) {
+		err = adc_start(sh, ADC_DEFAULT_RATE_HZ);
+		if (err != 0) {
+			return err;
+		}
+
+		started = true;
+	}
+
+	(void)memset(hist, 0, sizeof(hist));
+
+	for (unsigned long i = 0UL; i < blocks; i++) {
+		err = dvp_adc_get_block(adc_dev, &data, &len, ADC_BLOCK_TIMEOUT);
+		if (err != 0) {
+			shell_error(sh, "No block within 100 ms (err %d)", err);
+			break;
+		}
+
+		if (i == 0UL) {
+			shell_print(sh, "First %u bytes:", ADC_DUMP_LEN);
+			shell_hexdump(sh, data, ADC_DUMP_LEN);
+
+			/* Unwritten bytes at the end of the first block after start */
+			while (tail < len && data[len - 1U - tail] == ADC_FILL_PATTERN) {
+				tail++;
+			}
+		}
+
+		for (size_t j = 0U; j < len; j++) {
+			hist[data[j]]++;
+			sum += data[j];
+			min = MIN(min, data[j]);
+			max = MAX(max, data[j]);
+		}
+
+		total += (uint32_t)len;
+		dvp_adc_release_block(adc_dev);
+	}
+
+	if (started) {
+		(void)dvp_adc_stop(adc_dev);
+	}
+
+	if (total == 0U) {
+		adc_print_stats(sh);
+		return (err != 0) ? err : -EIO;
+	}
+
+	shell_print(sh, "Samples:        %u", total);
+	shell_print(sh, "Min / max:      0x%02x / 0x%02x", min, max);
+	shell_print(sh, "Mean:           %u.%u", (uint32_t)(sum / total),
+		    (uint32_t)(sum * 10U / total % 10U));
+	if (started) {
+		shell_print(sh, "First block:    %u trailing bytes still 0x%02x", tail,
+			    ADC_FILL_PATTERN);
+	}
+
+	shell_print(sh, "Most frequent codes:");
+	adc_print_top_codes(sh, hist, total);
+	adc_print_stats(sh);
+
+	return err;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_adc,
+	SHELL_CMD_ARG(start, NULL, "Start the capture: [rate_hz], default 8 MS/s", cmd_adc_start,
+		      1, 1),
+	SHELL_CMD_ARG(stop, NULL, "Stop the capture", cmd_adc_stop, 1, 0),
+	SHELL_CMD_ARG(status, NULL, "Show the capture statistics", cmd_adc_status, 1, 0),
+	SHELL_CMD_ARG(capture, NULL,
+		      "Take [blocks] blocks (default 4) and show code statistics; starts and "
+		      "stops the capture at 8 MS/s if it is not running",
+		      cmd_adc_capture, 1, 1),
+	SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tuner,
 	SHELL_CMD_ARG(regs, NULL, "Dump and decode the R820T2 registers, [live] reads the chip",
 		      cmd_tuner_regs, 1, 1),
@@ -342,6 +568,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tuner,
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_welle_sdr,
 	SHELL_CMD_ARG(status, NULL, "Show USB, stream and tuner state", cmd_status, 1, 0),
 	SHELL_CMD(tuner, &sub_tuner, "R820T2 tuner commands", NULL),
+	SHELL_CMD(adc, &sub_adc, "AD9280 ADC capture commands", NULL),
 	SHELL_CMD_ARG(demod, NULL, "Dump demod registers: <page> <reg> [len]", cmd_demod, 3, 1),
 	SHELL_SUBCMD_SET_END
 );

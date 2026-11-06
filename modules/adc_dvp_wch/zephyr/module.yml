@@ -1,0 +1,9 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+name: adc_dvp_wch
+build:
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .

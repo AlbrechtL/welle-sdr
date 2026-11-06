@@ -1,0 +1,45 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+config ADC_DVP_WCH
+	bool "Parallel ADC capture with the WCH DVP"
+	default y
+	depends on DT_HAS_WCH_DVP_ADC_ENABLED
+	depends on PWM
+	depends on GPIO
+	help
+	  Capture driver for an 8-bit parallel ADC such as the AD9280 on the
+	  digital video port (DVP) of the WCH CH32V30x. A timer PWM output
+	  provides the ADC clock, which is fed back into DVP_PCLK.
+
+if ADC_DVP_WCH
+
+config ADC_DVP_WCH_INIT_PRIORITY
+	int "Init priority"
+	default 80
+	help
+	  Device init priority. Must be after the PWM and GPIO drivers.
+
+config ADC_DVP_WCH_BLOCK_SIZE
+	int "DMA block size in bytes"
+	default 2048
+	range 256 16384
+	help
+	  Number of samples per DMA block. The DVP raises one interrupt per
+	  block. Must be a multiple of 4, as the DVP DMA moves 4 bytes per
+	  request.
+
+config ADC_DVP_WCH_BLOCK_COUNT
+	int "Number of DMA blocks"
+	default 4
+	range 3 8
+	help
+	  Number of blocks in the capture ring. Two blocks are always
+	  assigned to the DVP DMA, the others hold completed data until the
+	  consumer releases them.
+
+module = ADC_DVP_WCH
+module-str = adc_dvp_wch
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # ADC_DVP_WCH

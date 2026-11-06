@@ -1,0 +1,47 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  8-bit parallel ADC (such as the AD9280) sampled by the digital video port
+  (DVP) of the WCH CH32V30x.
+
+  The DVP runs in JPEG mode, in which it stores a continuous byte stream in
+  fixed-size DMA blocks. A timer PWM output generates the ADC clock, which
+  is also wired to DVP_PCLK. Two GPIO outputs drive DVP_HSYNC and DVP_VSYNC,
+  as the ADC has no line or frame signals.
+
+compatible: "wch,dvp-adc"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    required: true
+
+  pwms:
+    type: phandle-array
+    required: true
+    description: PWM output that drives the ADC clock (DCLK) and DVP_PCLK.
+
+  hsync-gpios:
+    type: phandle-array
+    required: true
+    description: GPIO output wired to DVP_HSYNC; held active while capturing.
+
+  vsync-gpios:
+    type: phandle-array
+    required: true
+    description: GPIO output wired to DVP_VSYNC; active while capturing.
+
+  input-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      DVP input pins (data, PCLK, HSYNC, VSYNC), configured as floating
+      inputs at init.
