@@ -90,7 +90,7 @@ From the AD9280 datasheet [1] and the pin-compatible 3PA9280 datasheet [2].
   not on the J2 silkscreen).
 - Output levels follow DRVDD; at 3.3 V they are compatible with 3.3 V logic.
 
-## Analog front end (assumption, not verified)
+## Analog front end
 
 The board has an op-amp attenuation/offset stage that maps a bipolar input into the
 ADC's 0 V to 2 V range and is powered from the on-board -5 V rail. The closest documented
@@ -99,8 +99,23 @@ design, the Zhengdian Atom ATK-HS-AD/DA module [11], uses:
     V_adc = V_in / 5 + 1        (-5 V -> 0 V, +5 V -> 2 V)
 
 This board likely behaves similarly. The resistors around U3/U4 (R7 2 kOhm, R9 20 kOhm,
-R10 10 kOhm) suggest attenuation ratios in that range, but the actual transfer function
-is unknown until the stage is traced.
+R10 10 kOhm) suggest attenuation ratios in that range.
+
+Measured with the CH32V307 DVP capture at 8 MS/s (README "ADC test"), DC at AD IN, mean of
+131072 samples:
+
+| AD IN | Mean code | Spread        |
+|-------|-----------|---------------|
+| 0 V   | 126.3     | 0x7B to 0x82  |
+| 3.3 V | 208.4     | 0xCF to 0xD2  |
+
+With 1 LSB = 2 V / 256: slope 24.9 codes/V (gain 1/5.14), offset 0.99 V, so
+
+    V_adc = 0.99 V + V_in / 5.14        (code 0x00 at about -5.1 V, 0xFF at about +5.2 V)
+
+which confirms the assumed V_in / 5 + 1 within a few percent. Only two points were
+measured; linearity and input impedance are not checked. At 24 MS/s the codes are 1.5 to
+4.5 LSB lower and carry a tone at fs/4 of about +/-1 LSB.
 
 ### Block diagram
 

@@ -352,6 +352,22 @@ Expected codes with AD IN at a fixed voltage, if the front end maps +/-5 V to th
 0 V to 2 V (see `docs/ad9280-adc-module.md`): about 0x80 at 0 V and about 0xD4 at 3.3 V,
 a constant code within a few LSB.
 
+Measured with the module, DC at AD IN, `adc capture 64` (131072 samples):
+
+| Rate     | AD IN 0 V: mean, range | AD IN 3.3 V: mean, range |
+|----------|------------------------|--------------------------|
+| 8 MS/s   | 126.3, 0x7B..0x82      | 208.4, 0xCF..0xD2        |
+| 12 MS/s  | -                      | 208.6, 0xCE..0xD3        |
+| 18 MS/s  | -                      | 208.7, 0xCE..0xD3        |
+| 24 MS/s  | 121.8, 0x74..0x7F      | 206.9, 0xCD..0xD2        |
+
+- At 8 MS/s: `V_adc = 0.99 V + V_in / 5.14`, the full code range covers about -5.1 V to
+  +5.2 V at AD IN (details in `docs/ad9280-adc-module.md`).
+- No bit errors at any rate: the spread stays within a few LSB around the mean.
+- 24 MS/s (rising-edge latch) reads 1.5 to 4.5 LSB lower and shows a repeating pattern of
+  period 4 (a tone at fs/4, about +/-1 LSB), possibly from the DVP DMA, which moves 4 bytes
+  per request; not verified. Use 18 MS/s or less.
+
 Measured without the ADC module (data lines open, DCLK looped back through the PA8-PA6
 jumper):
 
