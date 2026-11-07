@@ -124,8 +124,29 @@ void sample_src_set_mode(enum sample_src_mode mode)
 void sample_src_fill(uint8_t *buf, size_t len)
 {
 	static uint8_t counter;
+	size_t i = 0U;
 
-	for (size_t i = 0U; i < len; i++) {
+	/* Bytes up to a word boundary, then four counter values per word store */
+	for (; i < len && ((uintptr_t)&buf[i] & 3U) != 0U; i++) {
+		buf[i] = counter++;
+	}
+
+	if (i + 4U <= len) {
+		uint32_t *word = (uint32_t *)(void *)&buf[i];
+		const size_t words = (len - i) / 4U;
+
+		/* Little-endian: the lowest byte goes first on the wire */
+		for (size_t n = 0U; n < words; n++) {
+			word[n] = (uint32_t)counter | ((uint32_t)(uint8_t)(counter + 1U) << 8) |
+				  ((uint32_t)(uint8_t)(counter + 2U) << 16) |
+				  ((uint32_t)(uint8_t)(counter + 3U) << 24);
+			counter += 4U;
+		}
+
+		i += words * 4U;
+	}
+
+	for (; i < len; i++) {
 		buf[i] = counter++;
 	}
 }
