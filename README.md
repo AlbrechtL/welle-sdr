@@ -546,3 +546,130 @@ per-sample reference: `west twister -p native_sim -T apps/welle-sdr/tests/ddc`.
 - `rtl_test -p` runs in test mode, so it measures the unpaced counter stream (about
   2.37 MS/s), not the I/Q rate.
 
+
+## Raw mode
+
+In raw mode the device sends the real ADC samples as they are, and the host does the I/Q
+conversion. This lifts the CPU limit of the down-converter, so that bands like DAB
+(2.048 MS/s) become possible once the USB carries the needed rate (see Limits). librtlsdr
+stays unchanged: it moves the bytes and programs the tuner as for any RTL-SDR. The protocol
+is in `include/welle_sdr_raw.h` (plain C, for host software).
+
+### Selecting the mode: sample rate knock
+
+Stock rtl_tcp forwards only its high-level commands (no register, I2C or EEPROM access) and
+sends nothing back but samples. The host therefore selects the mode with a sequence of sample
+rates, which every path carries (librtlsdr `rtlsdr_set_sample_rate()`, rtl_tcp command 0x02,
+SoapySDR `setSampleRate()`):
+
+| Step | Rate (S/s)                                       |
+|------|--------------------------------------------------|
+| 1    | 3 141 592                                        |
+| 2    | 2 718 281                                        |
+| 3    | 1 100 000 + 1000 x code, code = version << 4 \| mode |
+| 4    | the host's real rate, e.g. 2 048 000             |
+
+Code 0x11 selects raw (1 117 000 S/s), 0x10 plain I/Q (1 116 000 S/s). Each rate must follow
+the previous one within 1 s. The firmware decodes the rate from the resampler ratio (page 1,
+regs 0x9f..0xa2) and accepts +/-250 Hz, which covers the +/-1000 Hz crystal correction
+librtlsdr allows. On a real RTL2832U the knock only changes the rate for a moment. Set the
+center frequency before the knock: every rate change retunes the tuner, and without a
+frequency librtlsdr prints `[R82XX] PLL not locked!`.
+
+Checked in the osmocom librtlsdr source and not usable for the switch: bias tee (puts voltage
+on the antenna of a real dongle), offset tuning (returns -2 for the R820T without sending
+anything), IF gain (the R820T driver has none, nothing is sent), direct sampling (shuts the
+tuner down), frequency correction (retunes and conflicts with the user's ppm value), EEPROM
+(local USB only).
+
+### Frames
+
+Each bulk transfer (4096 bytes) is one frame: a 20-byte header, then 4076 real unsigned 8-bit
+ADC samples. The samples continue across frames. Header, little-endian:
+
+| Offset | Size | Field                                                              |
+|--------|------|--------------------------------------------------------------------|
+| 0      | 4    | magic `WSDR`                                                       |
+| 4      | 1    | version, 1                                                         |
+| 5      | 1    | header length, 20: the samples start there                         |
+| 6      | 2    | flags: bit 0 spectrum inverted, bit 1 band above half the ADC rate |
+| 8      | 4    | index of the frame's first sample since raw mode started, wraps    |
+| 12     | 4    | ADC rate in S/s                                                    |
+| 16     | 4    | IF in Hz (signed), as librtlsdr programmed it                      |
+
+A plain RTL2832U stream never contains the header, so finding it is the detection: no header
+within a short time after the knock means a normal RTL-SDR. Search the magic at any offset
+and confirm it with the next header 4096 bytes later: frames are aligned with the host's
+transfers within one session, but when a host cancels its transfers (rtl_tcp client change),
+it can take part of a device transfer, and the next session starts mid-frame (measured: first
+header at byte 1536). A jump in the sample index beyond the payload gives the samples lost on
+the way, in the firmware (no free transfer) or on the host (rtl_tcp drops whole buffers).
+
+### ADC rate
+
+The band is IF +/- host rate / 2. The firmware takes the lowest exact rate 144 MHz / p of at
+least 2.2 times the band's upper edge (Nyquist plus 10 % for the tuner's filter skirts), capped
+at `CONFIG_WELLE_SDR_RAW_MAX_RATE` (default 4.5 MS/s, the USB limit). If the cap leaves the
+band's edge above half the ADC rate, flag bit 1 is set. librtlsdr's R820T driver uses an IF of
+1.625 MHz at 2.048 MS/s (band 0.6 .. 2.65 MHz, needs 5.83 MS/s: capped and aliased today) and
+1.7 MHz at 1.0 and 1.024 MS/s (band edge 2.21 MHz: fits at 4.5 MS/s).
+
+### Host conversion
+
+With the header values: mix the samples x[n] with exp(+j 2 pi IF n / fs) if the spectrum is
+inverted (tuner LO above the RF, librtlsdr's R820T setting), else with exp(-j 2 pi IF n / fs),
+low-pass, and resample from the ADC rate to the wanted rate. `tools/raw2iq.py` is a reference
+(mixer, 255-tap windowed sinc, integer decimation) that writes `rtl_sdr`-style u8 I/Q.
+
+### Lease
+
+Raw mode ends, back to plain I/Q, when the host opens or closes the device, on a knock with
+mode 0, and when no bulk transfer completes for `CONFIG_WELLE_SDR_RAW_IDLE_MS` (1 s). The last
+rule covers rtl_tcp, which keeps the device open across clients: when a client leaves, the
+firmware also cancels the frames still queued on the endpoint, so the next client (e.g. SDR++)
+gets only I/Q. Knock right before starting to read. `rtl_test` test mode still takes
+precedence. `welle-sdr mode raw|iq` sets the mode from the shell, under the same lease.
+
+### Test
+
+`tools/wsdr_raw.py` knocks, captures and checks the frames, locally through the installed
+librtlsdr (ctypes) or through rtl_tcp (`--tcp host:port`); `-o` writes the samples without
+headers, `--no-knock` checks that a plain stream has no frames.
+
+```
+tools/wsdr_raw.py -s 1000000 -f 93600000 -n 16000000 -o raw.u8
+tools/iq_peaks.py --real -s 4500000 raw.u8
+tools/raw2iq.py raw.u8 iq.u8 -s 4500000 --if 1699996 --inverted
+tools/iq_peaks.py -s 1125000 iq.u8
+
+rtl_tcp -a 127.0.0.1 -f 93600000 &
+tools/wsdr_raw.py --tcp 127.0.0.1:1234 -s 1000000 -f 93600000 -n 8000000
+tools/wsdr_raw.py --tcp 127.0.0.1:1234 --no-knock -n 4000000
+```
+
+Measured with the R820T2 and an FM station at 93.7 MHz, host rate 1.0 MS/s:
+
+| Check                                   | Result                                              |
+|-----------------------------------------|-----------------------------------------------------|
+| local, 16 MB                            | 3968 frames, 0 lost samples, 4.46 MB/s, ADC 4.5 MS/s |
+| local, 60 MB                            | 14656 frames, 0 lost, 0 ADC overruns, 34 % load     |
+| rtl_tcp, 8 MB                           | 1953 frames, 0 lost samples, 4.25 MB/s              |
+| station, raw + `raw2iq.py` FM-demodulated | carrier +57.2 kHz, 19 kHz pilot 47 dB over the audio |
+| station, I/Q from the down-converter    | carrier +57.7 kHz, pilot 50 dB                      |
+| retune +100 kHz                         | IF line +101 kHz (inverted spectrum confirmed)      |
+| next rtl_tcp client without knock       | plain I/Q, no frames; lease ended after 1010 ms     |
+
+Both paths put the station 43 kHz (-457 ppm) below 93.7 MHz: an offset of the tuner's
+reference, not of the raw mode. The knock decoder, the framer and the rate plan have host
+tests: `west twister -p native_sim -T apps/welle-sdr/tests/raw_mode`.
+
+### Limits
+
+- 4.5 MS/s cap from the USB driver: DAB needs about 6 MS/s at librtlsdr's IF (header flag
+  bit 1 set until then). The copy into the transfers costs CPU too: `welle-sdr status` shows
+  34 % at 4.5 MS/s (copy, framing and the IF AGC measurement); a zero-copy path would remove
+  most of it.
+- Tested with local librtlsdr and rtl_tcp; SoapyRTLSDR is untested.
+- The down-converter (plain I/Q) does not reach 1.024 and 2.048 MS/s at librtlsdr's R820T IF:
+  its plan picks an ADC period that does not divide 144 MHz and the ADC start fails
+  (`ADC start at 5142857 S/s failed`). Raw mode is not affected.

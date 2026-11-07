@@ -39,7 +39,17 @@ existing files.
 - `src/sample_src.c`: stream source. Test mode: byte counter pulled by `rtl_stream_kick()`.
   Otherwise a thread (stack 2048: 1024 overflowed silently and reset the MCU) takes ADC blocks,
   runs `ddc_process()` into `rtl2832u_alloc_xfer()` buffers and submits them with
-  `rtl2832u_submit()`; it re-plans when the host changes rate, IF or inversion.
+  `rtl2832u_submit()`; it re-plans when the host changes rate, IF, inversion or mode. In raw
+  mode it frames the ADC blocks instead (one frame per transfer, a new transfer always starts
+  a frame: drop the partial transfer on any format or ADC rate change) and ends the mode when
+  `rtl2832u_xfers()` stops moving for `CONFIG_WELLE_SDR_RAW_IDLE_MS`, then flushes the queued
+  frames with `rtl2832u_flush()`.
+- `include/welle_sdr_raw.h`: raw mode protocol (knock rates, frame header), plain C for host
+  software such as welle.io: keep it free of Zephyr includes and the version in step with any
+  format change. `src/raw_knock.c` decodes the knock from the rates `rtl_demod_written()`
+  decodes; `src/raw_frame.c` writes the frames and plans the raw ADC rate (only exact
+  divisors of 144 MHz: `dvp_adc_start()` rejects others). Both pure C, host tests in
+  `tests/raw_mode`.
 - `src/ddc.c`: down-converter (fs / 4 mixer, CIC2, rotation) and rate plan with a CPU load
   model. Pure C, built with `-O2` (2.2x faster than `-Os`), host tests in `tests/ddc`
   (`west twister -p native_sim -T apps/welle-sdr/tests/ddc`), including a bit-exact
@@ -56,7 +66,13 @@ existing files.
   call around any new tuner bus access. `r820t2_set_vga_pin_mode()` keeps register
   0x0c bit 4 set in host writes meanwhile. `src/if_agc_ctl.c` holds the arithmetic (pure C,
   host tests in `tests/if_agc`).
-- `tools/iq_peaks.py`: strongest spectral lines of an `rtl_sdr` recording.
+- `tools/iq_peaks.py`: strongest spectral lines of an `rtl_sdr` recording, `--real` for raw
+  samples.
+- `tools/wsdr_raw.py`: raw mode knock, capture and frame check through librtlsdr (ctypes) or
+  rtl_tcp (`--tcp`). `tools/raw2iq.py`: host conversion of raw samples to u8 I/Q (reference
+  for welle.io). An `rtl_tcp` that got SIGTERM can keep running and hold the device
+  (`usb_claim_interface error -6`), or keep port 1234 with a stale handle: check `pgrep -a
+  rtl_tcp` before a test.
 - `src/welle_sdr_shell.c`: `welle-sdr` shell commands, using the accessors in
   `src/rtl2832u.h`, `src/r820t2.h` and `dvp_adc.h` (`welle-sdr adc ...`).
 - `src/status_led.c`: USB state on `led0`, polled every 50 ms from `rtl2832u_get_status()` and
@@ -244,7 +260,11 @@ existing files.
   buffering (`BUF_MODE`) or DMA straight from the net_buf. Real dongles do 2.4 to 3.2 MS/s.
 - The counter stream in test mode is unpaced; the I/Q stream is paced by the ADC.
 - CPU: the down-converter fits 1 MS/s (55 % load), not 2 MS/s; 2.048 MS/s is not an exact
-  plan. See README "I/Q stream" for the cost model and limits.
+  plan. See README "I/Q stream" for the cost model and limits. `ddc_plan()` can pick a period
+  that does not divide 144 MHz (1.024 and 2.048 MS/s at librtlsdr's R820T IF), and then
+  `dvp_adc_start()` fails: no I/Q at those rates.
+- Raw mode (README "Raw mode") is capped at 4.5 MS/s by the USB driver; DAB needs about
+  6 MS/s at librtlsdr's IF of 1.625 MHz.
 - Timing on the target: `k_cycle_get_32()` jumps back by one 10 ms tick, so time only
   intervals shorter than a tick with it (one call per measurement); a 10-call loop over
   1.7 M cycles read as 0.3 M and hid that the first DDC was 6x too slow.
