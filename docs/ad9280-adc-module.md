@@ -377,8 +377,8 @@ Rules for choosing fs:
   (8.192 MHz = 4 x 2.048 MHz) avoids a fractional resampler.
 - Processing load: at 8 MS/s a 144 MHz CH32V307 has about 18 cycles per sample for
   capture, mixing and filtering. Keep fs as low as Nyquist allows.
-- The USB path currently carries about 2.25 MS/s complex (see `AGENTS.md`), so the
-  decimated output must stay at or below that.
+- The USB path carries about 7.5 MB/s with the raw producer, 9.15 MB/s in test mode (see
+  `AGENTS.md`): up to about 3.7 MS/s complex, or raw real samples at 6 MS/s.
 
 ### Clock source options
 

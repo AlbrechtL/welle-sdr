@@ -16,7 +16,9 @@ existing files.
 ## Layout
 
 - `modules/udc_wch_usbhs/`: out-of-tree Zephyr module with the UDC driver for the CH32V307 USBHS
-  controller, the `wch,usbhs` binding and Kconfig. It is loaded through `ZEPHYR_EXTRA_MODULES` in
+  controller, the `wch,usbhs` binding and Kconfig. IN endpoints other than EP0 send from the
+  net_buf (DMA address per packet, 16-bit window) and chain transfers in the ISR, finished
+  buffers go to a per-endpoint done list for the thread; EP0 and OUT copy. It is loaded through `ZEPHYR_EXTRA_MODULES` in
   `CMakeLists.txt`. The zephyr tree stays unmodified: keep it that way.
 - `boards/ch32v307v_evt_r1_ch32v307_ram_64k.overlay`: the USBHS node (`0x40023400`, IRQ 85,
   clock `CH32V20X_V30X_CLOCK_USBHS`), labeled `zephyr_udc0`. The SoC dtsi has no USB node.
@@ -112,7 +114,7 @@ existing files.
 - `rtl_test` (test mode, 8-bit counter): `Samples per million lost (minimum): 0`. Stop it with
   SIGINT and run it through `stdbuf -o0 -e0`, otherwise the output is lost.
 - `rtl_test -p`: reports the rate every 10 s. It runs in test mode (unpaced counter, about
-  2.37 MS/s), so it says nothing about the I/Q stream; check that with `rtl_sdr` and
+  4.57 MS/s: the USB throughput benchmark), so it says nothing about the I/Q stream; check that with `rtl_sdr` and
   `tools/iq_peaks.py` (README "I/Q stream").
 - `rtl_sdr -n N`: N must not be a multiple of 131072, or rtl_sdr never stops (host tool bug:
   its stop condition is `bytes_to_read < len`).
@@ -255,17 +257,24 @@ existing files.
 
 ## Known limits and next steps
 
-- Throughput is about 2.25 MS/s (4.5 MB/s), about one 512-byte packet per microframe, probably
-  because every packet is re-armed from the ISR and NAKed in between. Candidates: double
-  buffering (`BUF_MODE`) or DMA straight from the net_buf. Real dongles do 2.4 to 3.2 MS/s.
+- Throughput: 9.15 MB/s in `rtl_test -p`, about 7.5 MB/s with the raw producer. The IN DMA
+  reads straight from the net_buf and the ISR starts the next queued transfer, so neither a
+  copy nor a thread sits between packets or transfers (4.75 MB/s before). What is left: the
+  endpoint NAKs while the ISR re-arms it after each packet (`USBHS_UC_INT_BUSY`, 4 us ISR),
+  and the host retries within 20..40 us or only one or two microframes later (measured). A
+  hardware ping-pong without INT_BUSY would need the ISR to re-arm a buffer before the
+  controller resends it, else the host gets stale data with a valid toggle: not done. The
+  test-mode counter is filled word-wise; with the byte loop it limited `rtl_test -p` to
+  6.5 MB/s (the usbd thread is cooperative, priority -8, and fills in its context).
 - The counter stream in test mode is unpaced; the I/Q stream is paced by the ADC.
 - CPU: the down-converter fits 1 MS/s (55 % load), not 2 MS/s; 2.048 MS/s is not an exact
   plan. See README "I/Q stream" for the cost model and limits. `dvp_adc_start()` takes the PWM
   clock over an integer period rounded to 1 Hz (`DDC_CLOCK_HZ / period` truncated is
   rejected when it differs). Inexact plans are chosen by rate error, not load: 1.024 and
   2.048 MS/s at librtlsdr's R820T IF run above the CPU budget and lose ADC blocks.
-- Raw mode (README "Raw mode") is capped at 4.5 MS/s by the USB driver; DAB needs about
-  6 MS/s at librtlsdr's IF of 1.625 MHz.
+- Raw mode (README "Raw mode") is capped at 6 MS/s (DAB at librtlsdr's IF of 1.625 MHz),
+  measured lossless; 8 MS/s loses about 6 %. The ADC level is too low for welle-cli to sync
+  on 5C (analog front end, README "IF AGC").
 - Timing on the target: `k_cycle_get_32()` jumps back by one 10 ms tick, so time only
   intervals shorter than a tick with it (one call per measurement); a 10-call loop over
   1.7 M cycles read as 0.3 M and hid that the first DDC was 6x too slow.

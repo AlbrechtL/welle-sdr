@@ -544,7 +544,7 @@ per-sample reference: `west twister -p native_sim -T apps/welle-sdr/tests/ddc`.
 - DC at AD IN lands on a CIC null only when D is a multiple of 4; otherwise it leaks into the
   band edge.
 - `rtl_test -p` runs in test mode, so it measures the unpaced counter stream (about
-  2.37 MS/s), not the I/Q rate.
+  4.57 MS/s, the USB throughput), not the I/Q rate.
 
 
 ## Raw mode
@@ -609,17 +609,19 @@ the way, in the firmware (no free transfer) or on the host (rtl_tcp drops whole 
 
 The band is IF +/- host rate / 2. The firmware takes the lowest exact rate 144 MHz / p of at
 least 2.2 times the band's upper edge (Nyquist plus 10 % for the tuner's filter skirts), capped
-at `CONFIG_WELLE_SDR_RAW_MAX_RATE` (default 4.5 MS/s, the USB limit). If the cap leaves the
-band's edge above half the ADC rate, flag bit 1 is set. librtlsdr's R820T driver uses an IF of
-1.625 MHz at 2.048 MS/s (band 0.6 .. 2.65 MHz, needs 5.83 MS/s: capped and aliased today) and
-1.7 MHz at 1.0 and 1.024 MS/s (band edge 2.21 MHz: fits at 4.5 MS/s).
+at `CONFIG_WELLE_SDR_RAW_MAX_RATE` (default 6 MS/s, the highest rate measured without loss
+over USB). If the cap leaves the band's edge above half the ADC rate, flag bit 1 is set.
+librtlsdr's R820T driver uses an IF of 1.625 MHz at 2.048 MS/s (band 0.6 .. 2.65 MHz, needs
+5.83 MS/s: 6 MS/s) and 1.7 MHz at 1.0 and 1.024 MS/s (needs 4.87 MS/s: 6 MS/s).
 
 ### Host conversion
 
 With the header values: mix the samples x[n] with exp(+j 2 pi IF n / fs) if the spectrum is
 inverted (tuner LO above the RF, librtlsdr's R820T setting), else with exp(-j 2 pi IF n / fs),
 low-pass, and resample from the ADC rate to the wanted rate. `tools/raw2iq.py` is a reference
-(mixer, 255-tap windowed sinc, integer decimation) that writes `rtl_sdr`-style u8 I/Q.
+that writes `rtl_sdr`-style u8 I/Q: mixer and a polyphase Kaiser low-pass (pass band 0.4, stop
+band 0.5 of the output rate) for any rational ratio, e.g. 6 MS/s to 2.048 MS/s is 128 / 375
+with 147 taps per phase.
 
 ### Lease
 
@@ -636,22 +638,25 @@ precedence. `welle-sdr mode raw|iq` sets the mode from the shell, under the same
 librtlsdr (ctypes) or through rtl_tcp (`--tcp host:port`); `-o` writes the samples without
 headers, `--no-knock` checks that a plain stream has no frames.
 
+`-g` sets a manual tuner gain, `--rtl-agc` turns on the host's RTL AGC (the IF AGC loop).
+
 ```
-tools/wsdr_raw.py -s 1000000 -f 93600000 -n 16000000 -o raw.u8
-tools/iq_peaks.py --real -s 4500000 raw.u8
-tools/raw2iq.py raw.u8 iq.u8 -s 4500000 --if 1699996 --inverted
-tools/iq_peaks.py -s 1125000 iq.u8
+tools/wsdr_raw.py -s 2048000 -f 93600000 -n 24000000 -o raw.u8
+tools/iq_peaks.py --real -s 6000000 raw.u8
+tools/raw2iq.py raw.u8 iq.u8 -s 6000000 --if 1624994 --inverted -r 2048000
+tools/iq_peaks.py -s 2048000 iq.u8
 
 rtl_tcp -a 127.0.0.1 -f 93600000 &
 tools/wsdr_raw.py --tcp 127.0.0.1:1234 -s 1000000 -f 93600000 -n 8000000
 tools/wsdr_raw.py --tcp 127.0.0.1:1234 --no-knock -n 4000000
 ```
 
-Measured with the R820T2 and an FM station at 93.7 MHz, host rate 1.0 MS/s:
+Measured with the R820T2 and an FM station at 93.7 MHz, host rate 1.0 MS/s, ADC 4.5 MS/s
+(the cap before the USB driver carried more):
 
 | Check                                   | Result                                              |
 |-----------------------------------------|-----------------------------------------------------|
-| local, 16 MB                            | 3968 frames, 0 lost samples, 4.46 MB/s, ADC 4.5 MS/s |
+| local, 16 MB                            | 3968 frames, 0 lost samples, 4.46 MB/s              |
 | local, 60 MB                            | 14656 frames, 0 lost, 0 ADC overruns, 34 % load     |
 | rtl_tcp, 8 MB                           | 1953 frames, 0 lost samples, 4.25 MB/s              |
 | station, raw + `raw2iq.py` FM-demodulated | carrier +57.2 kHz, 19 kHz pilot 47 dB over the audio |
@@ -659,16 +664,31 @@ Measured with the R820T2 and an FM station at 93.7 MHz, host rate 1.0 MS/s:
 | retune +100 kHz                         | IF line +101 kHz (inverted spectrum confirmed)      |
 | next rtl_tcp client without knock       | plain I/Q, no frames; lease ended after 1010 ms     |
 
+At the DAB rate, host rate 2.048 MS/s, ADC 6 MS/s:
+
+| Check                                   | Result                                              |
+|-----------------------------------------|-----------------------------------------------------|
+| local, 5C, 30 s (180 MB)                | 43945 frames, 0 lost, 0 dropped, 0 overruns, 46 % load, 5.99 MB/s |
+| rtl_tcp, 5C, 60 MB                      | 14604 frames, 0 lost samples                        |
+| FM station, raw to 2.048 MS/s, demodulated | pilot at 19000.0 Hz, 49.5 dB over the audio      |
+| ADC 8 MS/s (host 3.2 MS/s)              | 7.53 MB/s arrive, about 6 % of the samples dropped  |
+
+welle-cli does not sync on 5C yet: the level at the ADC is a few codes RMS, noise of the
+tuner's IF filter without a visible DAB block, with auto gain (4.3 codes), manual gain
+(0.8 .. 1.3 codes) and with the IF AGC loop at its top (2500 mV, 1.1 codes). That is the
+analog front end (README "IF AGC"), not the raw mode.
+
 Both paths put the station 43 kHz (-457 ppm) below 93.7 MHz: an offset of the tuner's
 reference, not of the raw mode. The knock decoder, the framer and the rate plan have host
 tests: `west twister -p native_sim -T apps/welle-sdr/tests/raw_mode`.
 
 ### Limits
 
-- 4.5 MS/s cap from the USB driver: DAB needs about 6 MS/s at librtlsdr's IF (header flag
-  bit 1 set until then). The copy into the transfers costs CPU too: `welle-sdr status` shows
-  34 % at 4.5 MS/s (copy, framing and the IF AGC measurement); a zero-copy path would remove
-  most of it.
+- 6 MS/s cap: the USB driver carries about 7.5 MB/s with the producer's copies (9.15 MB/s
+  counter in test mode), so 8 MS/s loses samples. After each packet the endpoint NAKs while
+  the ISR re-arms it (`USBHS_UC_INT_BUSY`); the host then often retries only one or two
+  microframes later. The copy into the transfers costs CPU: 46 % at 6 MS/s (copy, framing,
+  IF AGC measurement).
 - Tested with local librtlsdr and rtl_tcp; SoapyRTLSDR is untested.
 - The down-converter (plain I/Q) streams 1.024 and 2.048 MS/s at librtlsdr's R820T IF only
   4464 ppm off (ADC 5.142857 and 10.285714 MS/s, D 5) and above its CPU budget (estimated

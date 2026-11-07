@@ -21,13 +21,14 @@ config WELLE_SDR_XFER_COUNT
 
 config WELLE_SDR_RAW_MAX_RATE
 	int "Highest ADC rate in raw mode, in S/s"
-	default 4500000
+	default 6000000
 	range 100000 18000000
 	help
 	  Raw mode sends one byte per ADC sample. The rate is capped at what
-	  the USB device driver carries, measured at about 4.5 MB/s. A band
-	  that needs more is sent at this rate and flagged as aliased in the
-	  frame header.
+	  the USB device driver carries: 6 MS/s (DAB at 2.048 MS/s) streams
+	  without loss, 8 MS/s loses about 6 % (7.5 MB/s arrive). A band that
+	  needs more is sent at this rate and flagged as aliased in the frame
+	  header.
 
 config WELLE_SDR_RAW_IDLE_MS
 	int "Raw mode lease, in ms"
