@@ -250,12 +250,14 @@ int dvp_adc_start(const struct device *dev, uint32_t rate_hz)
 		return -EIO;
 	}
 
-	if (rate_hz == 0U || (cycles_per_sec % rate_hz) != 0U) {
+	if (rate_hz == 0U) {
 		return -EINVAL;
 	}
 
-	period = (uint32_t)(cycles_per_sec / rate_hz);
-	if (period < MIN_PERIOD_CYCLES || period > UINT16_MAX) {
+	/* The rate is the clock over an integer period, rounded to 1 Hz */
+	period = (uint32_t)((cycles_per_sec + rate_hz / 2U) / rate_hz);
+	if (period < MIN_PERIOD_CYCLES || period > UINT16_MAX ||
+	    (cycles_per_sec + period / 2U) / period != rate_hz) {
 		return -EINVAL;
 	}
 

@@ -332,7 +332,8 @@ static void producer_replan(struct producer *p)
 	producer_adc_stop(p);
 
 	p->period = period;
-	p->adc_rate = DDC_CLOCK_HZ / period;
+	/* Rounded like dvp_adc_start() expects it */
+	p->adc_rate = (DDC_CLOCK_HZ + period / 2U) / period;
 
 	err = dvp_adc_start(p->adc, p->adc_rate);
 	if (err != 0) {

@@ -37,9 +37,9 @@ struct dvp_adc_stats {
 /**
  * @brief Start the capture.
  *
- * Starts the ADC clock and the DVP. @p rate_hz must divide the PWM clock
- * into an integer number of cycles of at least 6 (at 144 MHz: 24, 20.57,
- * 18, 16, 14.4 MHz and lower). The clock is high for half the period,
+ * Starts the ADC clock and the DVP. @p rate_hz must be the PWM clock over
+ * an integer number of cycles of at least 6, rounded to 1 Hz (at 144 MHz:
+ * 24, 20.571429, 18, 16, 14.4 MHz and lower). The clock is high for half the period,
  * rounded down, which keeps the AD9280 minimum clock high and low time of
  * 14.7 ns (3 cycles = 20.8 ns). The DVP latches on the falling clock edge
  * below 20 MHz and on the rising edge above.

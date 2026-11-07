@@ -670,6 +670,7 @@ tests: `west twister -p native_sim -T apps/welle-sdr/tests/raw_mode`.
   34 % at 4.5 MS/s (copy, framing and the IF AGC measurement); a zero-copy path would remove
   most of it.
 - Tested with local librtlsdr and rtl_tcp; SoapyRTLSDR is untested.
-- The down-converter (plain I/Q) does not reach 1.024 and 2.048 MS/s at librtlsdr's R820T IF:
-  its plan picks an ADC period that does not divide 144 MHz and the ADC start fails
-  (`ADC start at 5142857 S/s failed`). Raw mode is not affected.
+- The down-converter (plain I/Q) streams 1.024 and 2.048 MS/s at librtlsdr's R820T IF only
+  4464 ppm off (ADC 5.142857 and 10.285714 MS/s, D 5) and above its CPU budget (estimated
+  109 and 218 %): ADC blocks are lost (measured 2052 and 8587 `Spurious IRQs` per 4 MB). Raw
+  mode is not affected.
