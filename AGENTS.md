@@ -49,7 +49,9 @@ existing files.
 - `src/if_agc.c`: PWM on PA15 (TIM2_CH1, partial remap 1, programmed directly for the same
   reason) into the tuner board's IF_AGC low-pass. Node `if_agc` (`welle,if-agc`, binding in
   `dts/bindings/`). The loop runs in the producer thread from `producer_block()` while the
-  host's RTL AGC is on, and only writes `CH1CVR`. The PWM edges break the bit-banged tuner
+  host's RTL AGC and the PWM are on, and only writes `CH1CVR`. The PWM is off after boot
+  (`CONFIG_WELLE_SDR_IF_AGC_PWM`, `welle-sdr agc pwm on`), PA15 then stays at 0 V and 0x0c bit 4
+  is cleared in every write. The PWM edges break the bit-banged tuner
   I2C, so `r820t2.c` floats PA15 around every transfer with `if_agc_bus_hold()`; keep that
   call around any new tuner bus access. `r820t2_set_vga_pin_mode()` keeps register
   0x0c bit 4 set in host writes meanwhile. `src/if_agc_ctl.c` holds the arithmetic (pure C,

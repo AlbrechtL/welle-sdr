@@ -148,15 +148,18 @@ the RC low-pass on the tuner board.
 
 - PWM: TIM2_CH1 on PA15 (TIM2 partial remap 1), 144 MHz / 4096 = 35.2 kHz, 12 bits. TIM2 is
   programmed directly in `src/if_agc.c`, like TIM3 for the test signal.
-- The host's RTL AGC switch turns the loop on (`rtlsdr_set_agc_mode()`, rtl_tcp command 0x08:
+- The PWM is off after boot: PA15 stays at 0 V, the VGA gain comes from its register (0x0c
+  bit 4 cleared in every write, also over librtlsdr's register init, which selects pin
+  control) and the loop does not run. `welle-sdr agc pwm on` starts it;
+  `CONFIG_WELLE_SDR_IF_AGC_PWM=y` starts it at boot.
+- With the PWM on, the host's RTL AGC switch turns the loop on (`rtlsdr_set_agc_mode()`, rtl_tcp command 0x08:
   demod page 0 reg 0x19 bit 5). librtlsdr writes 0x05 to that register on every open, so
   each session starts with the loop off. The switch is otherwise unused, as the RTL2832U's
   digital AGC is not emulated.
 - With the loop on, the firmware sets 0x0c bit 4 in every host write, so librtlsdr's gain
   changes do not take the VGA back. LNA and mixer gain stay with the host (manual or RF AGC).
   With the loop off, the host's last 0x0c value is written back and PA15 returns to the fixed
-  voltage (`CONFIG_WELLE_SDR_IF_AGC_FIXED_MV`, 1.55 V, about +22 dB). PA15 runs from boot, so
-  the pin never floats while librtlsdr's register init selects pin control.
+  voltage (`CONFIG_WELLE_SDR_IF_AGC_FIXED_MV`, 1.55 V, about +22 dB).
 - Loop: every 16th ADC sample (`CONFIG_WELLE_SDR_IF_AGC_STRIDE`) over 20 ms
   (`CONFIG_WELLE_SDR_IF_AGC_RATE_HZ`) gives the mean absolute deviation (MAD) of the codes
   from their mean. More than 1 in 1024 samples at code 0 or 255 steps the gain down by 3 dB.
@@ -187,7 +190,19 @@ the RC low-pass on the tuner board.
 `welle-sdr agc` shows the mode, the voltage and the approximate VGA gain, the PWM compare
 value, and with the loop on the measured MAD, mean code, clip rate and update count.
 `welle-sdr agc fixed <mV>` sets the voltage used while the loop is off, to measure the
-voltage to gain curve. `welle-sdr agc target <codes>` sets the target MAD. `welle-sdr status` shows the IF AGC line,
+voltage to gain curve. `welle-sdr agc target <codes>` sets the target MAD.
+`welle-sdr agc pwm off` stops the PWM: PA15 stays at 0 V, the VGA gain comes from its register
+(0x0c bit 4 cleared in every write) and the loop pauses; `on` runs it again.
+`welle-sdr tuner vga off` powers the VGA off (0x0c bit 6 cleared in every write, also by the
+standalone tune); `on` follows the written value again.
+
+Noise check on 5C at 1 MS/s (averaged spectrum of `rtl_sdr` recordings, RTL AGC off): the
+noise floor is 46 dB with the PWM on and off alike, and 11 dB with the VGA off, so the
+noise comes through the tuner's IF chain, not from the PWM or the ADC. With the VGA on the
+IF_AGC pin (RTL AGC on, 2500 mV) the lines at +/-35.16 kHz and +/-70.3 kHz around the
+strongest line are at the noise floor: no PWM ripple on the gain. At 2500 mV the level is
+about 13 dB lower than with librtlsdr's register code (26.5 dB), less than the datasheet
+curve gives; the voltage at pin 14 is not measured. `welle-sdr status` shows the IF AGC line,
 and `welle-sdr tuner regs` shows the VGA mode and the gains the RF AGC picked (register 3).
 
 The loop's arithmetic has host tests: `west twister -p native_sim -T apps/welle-sdr/tests/if_agc`.

@@ -304,9 +304,10 @@ register control once the host sets a gain mode (`rtlsdr_set_tuner_gain_mode()`,
 undefined: give IF_AGC a defined voltage (datasheet range 0.6 V to 2.5 V, 10 kOhm series
 resistor in the reference circuit) or check that the tuner board already does.
 
-The firmware drives IF_AGC from PA15 through the RC low-pass on the tuner board, at 1.55 V
-from boot. With the host's RTL AGC on, it keeps pin control selected and sets the voltage
-from the ADC level. See "IF AGC" in the README.
+The firmware can drive IF_AGC from PA15 through the RC low-pass on the tuner board. The PWM
+is off after boot (PA15 at 0 V, register control forced). With it on and the host's RTL AGC
+on, the firmware keeps pin control selected and sets the voltage from the ADC level. See
+"IF AGC" in the README.
 
 ### Limits of this path
 
