@@ -29,6 +29,10 @@ existing files.
 - `src/r820t2.c`: R820T2 on I2C. Forwards host reads and writes to the chip and keeps a register
   shadow (regs 0 to 4 as last read, 5 to 31 as last written) for the shell and the LO/gain
   logs. Also the wiring checks, the bus scan and the standalone tune for the shell test.
+  `forced_block_write()` applies the forced bits to every write: register 0x0c (IF AGC, VGA
+  power) and register 0x10 bits 1:0, the crystal load capacitors
+  (`CONFIG_WELLE_SDR_R820T2_XTAL_CAP`). librtlsdr writes 0 there; on this tuner board the
+  crystal then runs +437 ppm fast and drifts (README "Crystal load").
 - `src/si_fmt.c`: `si_fmt()` formats frequencies and sample rates with k/M/G prefixes, all
   digits kept (`435.544958 MHz`), for the shell and the logs.
 - `modules/adc_dvp_wch/`: out-of-tree module with the AD9280 capture driver on the DVP

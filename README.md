@@ -46,7 +46,8 @@ configures the device, and blinks at 5 Hz while samples are streamed.
 
 - SCL and SDA need external pull-ups to 3.3 V (4.7 kOhm), unless the tuner board has them.
 - GND of the tuner board must be connected to GND of the EVT board.
-- The R820T2 needs its 28.8 MHz crystal or reference clock.
+- The R820T2 needs its 28.8 MHz crystal or reference clock. The firmware switches on the
+  tuner's internal load capacitors for the crystal, see "Crystal load".
 - 7-bit I2C address 0x1a (librtlsdr uses the 8-bit form 0x34), 100 kHz.
 - PA15 drives the RC low-pass in front of the tuner's IF_AGC pin (pin 14) with a PWM, see
   "IF AGC". Without the low-pass the VGA sees the 3.3 V square wave.
@@ -218,6 +219,38 @@ that read.
 comes from a tune during open, before the requested frequency is set, where librtlsdr programs
 the PLL for the IF alone, outside the VCO range. The requested frequency locks. A real dongle
 gets the same request from librtlsdr.
+
+## Crystal load
+
+librtlsdr always writes 0 to register 0x10 bits 1:0, the R820T2's internal load capacitors
+on the crystal pins (`XTAL_HIGH_CAP_0P`, its crystal check is not used): RTL-SDR dongles
+have external load capacitors. The tuner board here has too little load without them, and
+its crystal runs fast and drifts while the chip warms up. The firmware sets the bits to
+`CONFIG_WELLE_SDR_R820T2_XTAL_CAP` (default 3) in every tuner write, also in the standalone
+tune; 0 leaves the host's value. `welle-sdr tuner regs` shows the code as `Xtal cap`.
+
+Measured on 9D (208.064 MHz, LO 209.689 MHz) in raw mode, from the position of the DAB
+block, with register 0x10 changed while streaming:
+
+| Register 0x10 bits | LO error                                      |
+|--------------------|-----------------------------------------------|
+| 0 (librtlsdr)      | +437 ppm (+91.7 kHz)                          |
+| 1                  | +115 ppm                                      |
+| 2                  | +109 ppm                                      |
+| 3                  | +17 ppm (+3.6 kHz)                            |
+| 0, bit 3 set (drive low) | +537 ppm                                |
+
+- With 0, the LO drifts by +12 ppm in the first 40 s after open (about +500 Hz/s at first,
+  +20 Hz/s after 40 s). With 3, by -2 ppm: +18.2 ppm at open, +16.2 ppm after 40 s.
+- At +437 ppm, welle.io finds no DAB ensemble: its coarse frequency correction covers
+  +/-35 kHz. The drift then also breaks the FIC: its fine correction follows at a tenth of
+  the error per 96 ms frame. With 3, welle-cli decodes 9D (16 services) from a recording
+  taken right after open, with no sync loss.
+- The remaining +17 ppm is within a crystal's tolerance. librtlsdr's frequency correction
+  (`rtlsdr_set_freq_correction()`, `rtl_sdr -p`) corrects it without breaking the raw mode
+  knock: the resampler ratio uses the uncorrected crystal frequency.
+- External load capacitors on the tuner board would do the same; their value depends on the
+  crystal's specified load, which is not known for this board.
 
 ## ADC module wiring (AD9280)
 
@@ -678,8 +711,9 @@ tuner's IF filter without a visible DAB block, with auto gain (4.3 codes), manua
 (0.8 .. 1.3 codes) and with the IF AGC loop at its top (2500 mV, 1.1 codes). That is the
 analog front end (README "IF AGC"), not the raw mode.
 
-Both paths put the station 43 kHz (-457 ppm) below 93.7 MHz: an offset of the tuner's
-reference, not of the raw mode. The knock decoder, the framer and the rate plan have host
+Both paths put the station 43 kHz (-457 ppm) below 93.7 MHz: the tuner's crystal without
+load capacitors, measured before the firmware set them (see "Crystal load"), not the raw
+mode. The knock decoder, the framer and the rate plan have host
 tests: `west twister -p native_sim -T apps/welle-sdr/tests/raw_mode`.
 
 ### Limits

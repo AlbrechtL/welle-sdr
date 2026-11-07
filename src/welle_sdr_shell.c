@@ -207,6 +207,9 @@ static void print_fields(const struct shell *sh, const uint8_t *regs, bool pll_p
 		return;
 	}
 
+	shell_print(sh, "Xtal cap:     code %u (configured %u)", f.xtal_cap,
+		    CONFIG_WELLE_SDR_R820T2_XTAL_CAP);
+
 	shell_print(sh, "PLL:          Nint %u, SDM %u/65536 (%s), reference %s", f.nint, f.sdm,
 		    f.sdm_on ? "on" : "off", f.refdiv2 ? "14.4 MHz" : "28.8 MHz");
 	shell_print(sh, "VCO current:  %u", f.vco_cur);

@@ -63,11 +63,15 @@ LOG_MODULE_REGISTER(r820t2, LOG_LEVEL_INF);
 #define R820T2_REG_VGA        0x0CU
 #define R820T2_VGA_PIN        0x10U
 #define R820T2_VGA_POWER      0x40U
-/* Register 0x10: divider (bits 7:5), reference divided by 2 (bit 4) */
+/*
+ * Register 0x10: divider (bits 7:5), reference divided by 2 (bit 4),
+ * crystal load capacitors (bits 1:0)
+ */
 #define R820T2_REG_DIV        0x10U
 #define R820T2_DIV_SHIFT      5U
 #define R820T2_DIV_MASK       0xE0U
 #define R820T2_REFDIV2        0x10U
+#define R820T2_XTAL_CAP_MASK  0x03U
 /* Register 0x12: VCO current (bits 7:5), bit 3 sigma-delta modulator powered off */
 #define R820T2_REG_VCO        0x12U
 #define R820T2_VCO_CUR_SHIFT  5U
@@ -369,14 +373,24 @@ int r820t2_init(void)
 	return err;
 }
 
-/* Offset of register 0x0c in a write block, 0 if the block does not cover it */
-static size_t vga_offset(const uint8_t *data, size_t len)
+/* Offset of register reg in a write block, 0 if the block does not cover it */
+static size_t reg_offset(const uint8_t *data, size_t len, uint8_t reg)
 {
-	if (data[0] > R820T2_REG_VGA || R820T2_REG_VGA - data[0] + 1U >= len) {
+	if (data[0] > reg || reg - data[0] + 1U >= len) {
 		return 0U;
 	}
 
-	return R820T2_REG_VGA - data[0] + 1U;
+	return reg - data[0] + 1U;
+}
+
+/* Register 0x10 value with the configured crystal load capacitors */
+static uint8_t xtal_forced(uint8_t val)
+{
+	if (CONFIG_WELLE_SDR_R820T2_XTAL_CAP == 0) {
+		return val;
+	}
+
+	return (uint8_t)((val & ~R820T2_XTAL_CAP_MASK) | CONFIG_WELLE_SDR_R820T2_XTAL_CAP);
 }
 
 /* Register 0x0c value with the forced bits applied, called with tuner_lock held */
@@ -386,20 +400,27 @@ static uint8_t vga_forced(uint8_t val)
 }
 
 /*
- * Write a block with the forced register 0x0c bits applied and record the
- * unforced value, called with tuner_lock held. A block longer than the
- * register file is never written by librtlsdr; it is passed on as is.
+ * Write a block with the forced register 0x0c and 0x10 bits applied and
+ * record the unforced 0x0c value, called with tuner_lock held. A block
+ * longer than the register file is never written by librtlsdr; it is passed
+ * on as is.
  */
-static int vga_block_write(const uint8_t *data, size_t len)
+static int forced_block_write(const uint8_t *data, size_t len)
 {
 	uint8_t forced[R820T2_NUM_REGS + 1U];
-	const size_t vga = vga_offset(data, len);
+	const size_t vga = reg_offset(data, len, R820T2_REG_VGA);
+	const size_t xtal = reg_offset(data, len, R820T2_REG_DIV);
 	const uint8_t *out = data;
 	int err;
 
-	if (vga != 0U && len <= sizeof(forced)) {
+	if ((vga != 0U || xtal != 0U) && len <= sizeof(forced)) {
 		memcpy(forced, data, len);
-		forced[vga] = vga_forced(data[vga]);
+		if (vga != 0U) {
+			forced[vga] = vga_forced(data[vga]);
+		}
+		if (xtal != 0U) {
+			forced[xtal] = xtal_forced(data[xtal]);
+		}
 		out = forced;
 	}
 
@@ -449,7 +470,7 @@ int r820t2_i2c_write(const uint8_t *data, size_t len)
 
 	k_mutex_lock(&tuner_lock, K_FOREVER);
 
-	err = vga_block_write(data, len);
+	err = forced_block_write(data, len);
 
 	k_mutex_unlock(&tuner_lock);
 
@@ -545,6 +566,7 @@ void r820t2_decode(const uint8_t *r, struct r820t2_fields *f)
 
 	f->mix_div = (uint16_t)(2U << (div >> R820T2_DIV_SHIFT));
 	f->refdiv2 = (div & R820T2_REFDIV2) != 0U;
+	f->xtal_cap = div & R820T2_XTAL_CAP_MASK;
 	f->vco_cur = r[R820T2_REG_VCO] >> R820T2_VCO_CUR_SHIFT;
 	f->sdm_on = (r[R820T2_REG_VCO] & R820T2_SDM_OFF) == 0U;
 	f->nint = (uint16_t)(4U * (r[R820T2_REG_NI_SI] & 0x3FU) +
@@ -813,7 +835,7 @@ int r820t2_standalone_tune(uint32_t lo_hz)
 
 	k_mutex_lock(&tuner_lock, K_FOREVER);
 
-	err = vga_block_write(buf, sizeof(buf));
+	err = forced_block_write(buf, sizeof(buf));
 	if (err == 0) {
 		err = pll_tune(lo_hz, R820T2_VCO_CUR_FIRST);
 	}

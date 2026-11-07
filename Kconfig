@@ -39,6 +39,19 @@ config WELLE_SDR_RAW_IDLE_MS
 	  long, so that the next host, e.g. the next rtl_tcp client, gets the
 	  format it expects.
 
+config WELLE_SDR_R820T2_XTAL_CAP
+	int "R820T2 crystal load capacitor code"
+	default 3
+	range 0 3
+	help
+	  Register 0x10 bits 1:0, set in every tuner write over the written
+	  value: the tuner's internal load capacitors on the crystal pins
+	  (librtlsdr: 1 is 10 pF, 2 is 20 pF). librtlsdr always writes 0, as
+	  RTL-SDR dongles have external load capacitors. The tuner board here
+	  has too little load without them and its crystal runs fast:
+	  measured LO error on 9D +437 ppm with 0, +115 ppm with 1, +109 ppm
+	  with 2 and +17 ppm with 3. 0 leaves the host's value.
+
 menu "IF AGC"
 
 config WELLE_SDR_IF_AGC_PWM

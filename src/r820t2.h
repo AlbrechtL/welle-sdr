@@ -77,6 +77,8 @@ struct r820t2_fields {
 	uint16_t mix_div;
 	/** Register 0x10 bit 4: PLL reference divided by 2. */
 	bool refdiv2;
+	/** Register 0x10 bits 1:0: crystal load capacitor code. */
+	uint8_t xtal_cap;
 	/** Register 0x12 bits 7:5: VCO current setting. */
 	uint8_t vco_cur;
 	/** Register 0x12 bit 3 clear: sigma-delta modulator on. */
