@@ -7,8 +7,17 @@
 /*
  * USB device controller driver for the WCH USBHS controller (CH32V305/307/317).
  *
- * Each endpoint direction has one DMA buffer; the driver copies between the
- * DMA buffer and the net_buf. EP0 uses a single buffer for SETUP, OUT and IN.
+ * Each endpoint direction has one DMA buffer. IN endpoints other than EP0
+ * point the DMA at the net_buf data instead when it is word-aligned and in
+ * the DMA buffer's 64 KB window (the address registers hold 16 bits), so a
+ * packet is not copied; otherwise the driver copies between the DMA buffer
+ * and the net_buf. EP0 uses a single buffer for SETUP, OUT and IN.
+ *
+ * When a transfer on an IN endpoint other than EP0 ends, the ISR starts the
+ * next queued one at once and leaves the finished buffer on a done list for
+ * the thread: the endpoint does not wait for a thread to run between
+ * transfers.
+ *
  * Data toggles are handled in software. USBHS_UC_INT_BUSY makes the
  * controller NAK all traffic while an interrupt flag is pending, so only one
  * transfer completion is reported at a time.
@@ -33,6 +42,10 @@ LOG_MODULE_REGISTER(udc_wch_usbhs, CONFIG_UDC_DRIVER_LOG_LEVEL);
 #define WCH_USBHS_EP0_MPS      64U
 #define WCH_USBHS_MAX_EPS      16U
 #define WCH_USBHS_BUF_BLK_SIZE 64U
+/* Endpoint DMA addresses must be word-aligned */
+#define WCH_USBHS_DMA_ALIGN_MASK 3U
+/* The DMA address registers hold the low 16 bits of the address */
+#define WCH_USBHS_DMA_WINDOW_MASK 0xFFFFU
 
 /* TX and RX control registers share the bit layout */
 #define EP_RES_MASK  USBHS_UEP_T_RES_MASK
@@ -69,6 +82,8 @@ struct wch_usbhs_ep_data {
 	uint16_t len;
 	/* Endpoint is armed by the driver */
 	bool active;
+	/* IN endpoints other than EP0: finished transfers, reported by the thread */
+	struct k_fifo done;
 };
 
 enum wch_usbhs_event_type {
@@ -188,11 +203,23 @@ static void wch_usbhs_prep_tx(const struct device *dev, struct udc_ep_config *co
 	const struct wch_usbhs_config *config = dev->config;
 	struct wch_usbhs_ep_data *ep_data = get_ep_data(dev, cfg->addr);
 	const uint16_t len = MIN(udc_mps_ep_size(cfg), buf->len);
+	const uintptr_t data = (uintptr_t)buf->data;
+	const bool zero_copy = USB_EP_GET_IDX(cfg->addr) != 0U &&
+			       (data & WCH_USBHS_DMA_ALIGN_MASK) == 0U &&
+			       (data & ~WCH_USBHS_DMA_WINDOW_MASK) ==
+				       ((uintptr_t)ep_data->buf & ~WCH_USBHS_DMA_WINDOW_MASK);
 	unsigned int key;
 
 	key = irq_lock();
 
-	memcpy(ep_data->buf, buf->data, len);
+	if (zero_copy) {
+		/* The net_buf stays queued until the transfer finishes */
+		*ep_dma_reg(config->regs, cfg->addr) = (uint32_t)data;
+	} else {
+		*ep_dma_reg(config->regs, cfg->addr) = (uint32_t)(uintptr_t)ep_data->buf;
+		memcpy(ep_data->buf, buf->data, len);
+	}
+
 	ep_data->len = len;
 	ep_data->active = true;
 	*ep_tx_len_reg(config->regs, USB_EP_GET_IDX(cfg->addr)) = len;
@@ -243,6 +270,28 @@ static void wch_usbhs_xfer_finished(const struct device *dev, const uint8_t ep)
 	k_event_post(&priv->events, BIT(WCH_USBHS_EVT_XFER_FINISHED));
 }
 
+/* Move the finished transfer to the done list and start the next queued one */
+static void wch_usbhs_in_chain(const struct device *dev, struct udc_ep_config *const cfg)
+{
+	struct wch_usbhs_data *priv = udc_get_private(dev);
+	struct wch_usbhs_ep_data *ep_data = get_ep_data(dev, cfg->addr);
+	struct net_buf *next;
+
+	k_fifo_put(&ep_data->done, udc_buf_get(cfg));
+
+	next = udc_buf_peek(cfg);
+	if (next != NULL && !cfg->stat.halted) {
+		wch_usbhs_prep_tx(dev, cfg, next);
+	} else {
+		/* The thread starts the next transfer that is queued */
+		ep_data->active = false;
+		udc_ep_set_busy(cfg, false);
+	}
+
+	atomic_set_bit(&priv->xfer_finished, udc_ep_to_bnum(cfg->addr));
+	k_event_post(&priv->events, BIT(WCH_USBHS_EVT_XFER_FINISHED));
+}
+
 static void wch_usbhs_isr_in(const struct device *dev, const uint8_t idx)
 {
 	const struct wch_usbhs_config *config = dev->config;
@@ -274,6 +323,8 @@ static void wch_usbhs_isr_in(const struct device *dev, const uint8_t idx)
 	} else if (udc_ep_buf_has_zlp(buf)) {
 		udc_ep_buf_clear_zlp(buf);
 		wch_usbhs_prep_tx(dev, cfg, buf);
+	} else if (idx != 0U) {
+		wch_usbhs_in_chain(dev, cfg);
 	} else {
 		wch_usbhs_xfer_finished(dev, ep);
 	}
@@ -422,13 +473,14 @@ static void wch_usbhs_handle_xfer_next(const struct device *dev,
 		return;
 	}
 
+	/* Busy before arming: the IN ISR clears it when it finds no next transfer */
+	udc_ep_set_busy(cfg, true);
+
 	if (USB_EP_DIR_IS_OUT(cfg->addr)) {
 		wch_usbhs_prep_rx(dev, cfg);
 	} else {
 		wch_usbhs_prep_tx(dev, cfg, buf);
 	}
-
-	udc_ep_set_busy(cfg, true);
 }
 
 static void wch_usbhs_handle_xfer_finished(const struct device *dev,
@@ -445,6 +497,21 @@ static void wch_usbhs_handle_xfer_finished(const struct device *dev,
 
 	udc_ep_set_busy(cfg, false);
 	udc_submit_ep_event(dev, buf, 0);
+}
+
+/* Report the transfers the IN ISR finished; start one if the ISR found none queued */
+static void wch_usbhs_handle_in_done(const struct device *dev, struct udc_ep_config *const cfg)
+{
+	struct wch_usbhs_ep_data *ep_data = get_ep_data(dev, cfg->addr);
+	struct net_buf *buf;
+
+	while ((buf = k_fifo_get(&ep_data->done, K_NO_WAIT)) != NULL) {
+		udc_submit_ep_event(dev, buf, 0);
+	}
+
+	if (!udc_ep_is_busy(cfg)) {
+		wch_usbhs_handle_xfer_next(dev, cfg);
+	}
 }
 
 static void wch_usbhs_handle_setup(const struct device *dev)
@@ -488,6 +555,11 @@ static void wch_usbhs_thread_handler(void *const arg)
 			ep = udc_pull_ep_from_bmsk(&eps);
 			ep_cfg = udc_get_ep_cfg(dev, ep);
 			LOG_DBG("Finished event ep 0x%02x", ep);
+
+			if (USB_EP_DIR_IS_IN(ep) && USB_EP_GET_IDX(ep) != 0U) {
+				wch_usbhs_handle_in_done(dev, ep_cfg);
+				continue;
+			}
 
 			wch_usbhs_handle_xfer_finished(dev, ep_cfg);
 			if (!udc_ep_is_busy(ep_cfg)) {
@@ -854,6 +926,10 @@ static int udc_wch_usbhs_driver_preinit(const struct device *dev)
 	k_event_init(&priv->events);
 	atomic_clear(&priv->xfer_new);
 	atomic_clear(&priv->xfer_finished);
+
+	for (size_t i = 0; i < WCH_USBHS_MAX_EPS; i++) {
+		k_fifo_init(&priv->in_ep[i].done);
+	}
 
 	data->caps.rwup = false;
 	data->caps.mps0 = UDC_MPS0_64;
