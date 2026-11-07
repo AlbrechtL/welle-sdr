@@ -18,12 +18,16 @@ target_sources(app PRIVATE
   src/main.c
   src/rtl2832u.c
   src/r820t2.c
+  src/raw_frame.c
+  src/raw_knock.c
   src/sample_src.c
   src/si_fmt.c
   src/status_led.c
   src/testsig.c
   src/welle_sdr_shell.c
 )
+
+target_include_directories(app PRIVATE include)
 
 # The down-converter sample loop: -O2 is 2.2 times faster than the default -Os (measured)
 set_source_files_properties(src/ddc.c PROPERTIES COMPILE_OPTIONS "-O2")

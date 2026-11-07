@@ -11,10 +11,28 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/** Stream format. */
+enum sample_src_mode {
+	/** Interleaved u8 I/Q from the down-converter, as a RTL2832U. */
+	SAMPLE_SRC_MODE_IQ = 0,
+	/** Framed real u8 ADC samples, see include/welle_sdr_raw.h. */
+	SAMPLE_SRC_MODE_RAW = 1,
+};
+
 /** Sample source state for the shell. */
 struct sample_src_stats {
 	/** The producer streams ADC data. */
 	bool running;
+	/** Stream format in use. */
+	enum sample_src_mode mode;
+	/** Raw mode: the ADC rate is limited by CONFIG_WELLE_SDR_RAW_MAX_RATE. */
+	bool raw_capped;
+	/** Raw mode: the band reaches above half the ADC rate. */
+	bool raw_aliased;
+	/** Raw mode: ADC rate the band asks for. */
+	uint32_t raw_need_rate;
+	/** Raw mode ended because no transfer completed for CONFIG_WELLE_SDR_RAW_IDLE_MS. */
+	uint32_t raw_lease_ends;
 	/** A plan exists for the current rate and IF. */
 	bool planned;
 	/** The output rate is exactly the host rate. */
@@ -62,6 +80,16 @@ void sample_src_set_if(int32_t if_hz);
 
 /** Set the demodulator spectrum inversion. */
 void sample_src_set_inversion(bool invert);
+
+/**
+ * @brief Select the stream format.
+ *
+ * Raw mode lasts while the host reads: it ends when no bulk transfer
+ * completes for CONFIG_WELLE_SDR_RAW_IDLE_MS after this call.
+ *
+ * @param mode New format.
+ */
+void sample_src_set_mode(enum sample_src_mode mode);
 
 /** Fill @p buf with the next @p len bytes of the test mode counter. */
 void sample_src_fill(uint8_t *buf, size_t len);

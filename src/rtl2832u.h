@@ -77,4 +77,19 @@ struct net_buf *rtl2832u_alloc_xfer(void);
  */
 int rtl2832u_submit(struct net_buf *buf);
 
+/**
+ * @brief Cancel the bulk IN transfers in flight.
+ *
+ * Used when the stream format changes without a host request, so that the
+ * next host does not get data in the old format.
+ */
+void rtl2832u_flush(void);
+
+/**
+ * @brief Count of completed bulk IN transfers.
+ *
+ * @return Transfers the host has taken since boot, wrapping.
+ */
+uint32_t rtl2832u_xfers(void);
+
 #endif /* WELLE_SDR_RTL2832U_H_ */

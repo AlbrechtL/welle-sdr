@@ -19,6 +19,25 @@ config WELLE_SDR_XFER_COUNT
 	  Number of bulk IN transfers kept queued on the endpoint. The ADC
 	  paces the stream, so the buffers also absorb delays of the host.
 
+config WELLE_SDR_RAW_MAX_RATE
+	int "Highest ADC rate in raw mode, in S/s"
+	default 4500000
+	range 100000 18000000
+	help
+	  Raw mode sends one byte per ADC sample. The rate is capped at what
+	  the USB device driver carries, measured at about 4.5 MB/s. A band
+	  that needs more is sent at this rate and flagged as aliased in the
+	  frame header.
+
+config WELLE_SDR_RAW_IDLE_MS
+	int "Raw mode lease, in ms"
+	default 1000
+	range 100 60000
+	help
+	  Raw mode falls back to I/Q when no bulk transfer completes for this
+	  long, so that the next host, e.g. the next rtl_tcp client, gets the
+	  format it expects.
+
 menu "IF AGC"
 
 config WELLE_SDR_IF_AGC_PWM

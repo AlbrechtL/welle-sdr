@@ -23,8 +23,11 @@
 
 #include <zephyr/logging/log.h>
 
+#include <welle_sdr_raw.h>
+
 #include "if_agc.h"
 #include "r820t2.h"
+#include "raw_knock.h"
 #include "rtl2832u.h"
 #include "sample_src.h"
 #include "si_fmt.h"
@@ -144,6 +147,8 @@ struct rtl_data {
 	/* Value of xfers when streaming started */
 	uint32_t stream_start_xfers;
 	uint32_t sample_rate;
+	/* Sample rate sequence that selects the stream mode */
+	struct raw_knock knock;
 	/* Class instance, for transfers submitted by the sample source */
 	struct usbd_class_data *c_data;
 };
@@ -264,6 +269,37 @@ static uint8_t *rtl_reg_ptr(struct rtl_data *const data, const uint8_t block,
 	return NULL;
 }
 
+/* A sample rate may complete a knock: switch the stream mode */
+static void rtl_knock_feed(struct rtl_data *const data, const uint32_t rate)
+{
+	const int code = raw_knock_feed(&data->knock, rate, k_uptime_get_32());
+	uint32_t mode;
+
+	if (code < 0) {
+		return;
+	}
+
+	if (((uint32_t)code >> 4) != WSDR_RAW_VERSION) {
+		LOG_WRN("Knock for protocol version %u ignored", (uint32_t)code >> 4);
+		return;
+	}
+
+	mode = (uint32_t)code & 0x0FU;
+	switch (mode) {
+	case WSDR_RAW_MODE_IQ:
+		sample_src_set_mode(SAMPLE_SRC_MODE_IQ);
+		break;
+	case WSDR_RAW_MODE_RAW:
+		sample_src_set_mode(SAMPLE_SRC_MODE_RAW);
+		break;
+	default:
+		LOG_WRN("Knock for unknown mode %u ignored", mode);
+		return;
+	}
+
+	LOG_INF("Host selected %s output", (mode == WSDR_RAW_MODE_RAW) ? "raw" : "I/Q");
+}
+
 static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_t page,
 			      const uint8_t reg, const uint16_t len)
 {
@@ -291,6 +327,7 @@ static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_
 			data->sample_rate = rate;
 			sample_src_set_rate(rate);
 			LOG_INF("Sample rate %s", si_fmt(buf, sizeof(buf), rate, "S/s"));
+			rtl_knock_feed(data, rate);
 		}
 	}
 
@@ -312,6 +349,9 @@ static void rtl_demod_power(struct usbd_class_data *const c_data, const bool on)
 	if (on) {
 		if (!atomic_test_and_set_bit(&data->state, RTL_STATE_DEMOD_ON)) {
 			LOG_INF("Demodulator powered on (host driver opened)");
+			/* Raw mode only for the host that selected it */
+			raw_knock_reset(&data->knock);
+			sample_src_set_mode(SAMPLE_SRC_MODE_IQ);
 		}
 
 		return;
@@ -320,6 +360,8 @@ static void rtl_demod_power(struct usbd_class_data *const c_data, const bool on)
 	if (atomic_test_and_clear_bit(&data->state, RTL_STATE_DEMOD_ON)) {
 		atomic_clear_bit(&data->state, RTL_STATE_TUNER_PROBED);
 		LOG_INF("Demodulator powered off (host driver closed)");
+		raw_knock_reset(&data->knock);
+		sample_src_set_mode(SAMPLE_SRC_MODE_IQ);
 		/* librtlsdr does not stop the FIFO on close, no samples without a demodulator */
 		rtl_stream_set_running(c_data, false);
 	}
@@ -531,6 +573,7 @@ static int rtl_init(struct usbd_class_data *const c_data)
 	memset(&data->regs, 0, sizeof(data->regs));
 	atomic_clear(&data->state);
 	data->sample_rate = 0U;
+	raw_knock_reset(&data->knock);
 	data->c_data = c_data;
 	/* A missing tuner is logged; the host sees it as a NACK on its probe */
 	(void)r820t2_init();
@@ -674,6 +717,22 @@ int rtl2832u_submit(struct net_buf *buf)
 	}
 
 	return err;
+}
+
+void rtl2832u_flush(void)
+{
+	struct rtl_data *data = &rtl_data;
+
+	if (data->c_data != NULL && atomic_test_bit(&data->state, RTL_STATE_ENABLED) &&
+	    atomic_test_bit(&data->state, RTL_STATE_RUNNING)) {
+		(void)usbd_ep_dequeue(usbd_class_get_ctx(data->c_data),
+				      rtl_get_bulk_in(data->c_data));
+	}
+}
+
+uint32_t rtl2832u_xfers(void)
+{
+	return (uint32_t)atomic_get(&rtl_data.xfers);
 }
 
 const uint8_t *rtl2832u_demod_regs(uint8_t page)

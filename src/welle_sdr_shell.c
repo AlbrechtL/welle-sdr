@@ -52,12 +52,39 @@ static void print_if_agc_line(const struct shell *sh)
 		    mag % 10);
 }
 
+static void print_raw(const struct shell *sh, const struct sample_src_stats *raw)
+{
+	char buf[SI_FMT_LEN];
+	char need[SI_FMT_LEN];
+
+	shell_print(sh, "Raw:          %s, IF %d Hz%s", raw->running ? "running" : "stopped",
+		    raw->if_freq, raw->invert ? ", inverted" : "");
+
+	if (!raw->planned) {
+		shell_print(sh, "ADC rate:     no plan");
+		return;
+	}
+
+	shell_print(sh, "ADC rate:     %s (band needs %s%s)%s",
+		    si_fmt(buf, sizeof(buf), raw->adc_rate, "S/s"),
+		    si_fmt(need, sizeof(need), raw->raw_need_rate, "S/s"),
+		    raw->raw_capped ? ", capped" : "", raw->raw_aliased ? ", aliased" : "");
+	shell_print(sh, "Raw load:     %u %%", raw->load_pct);
+	shell_print(sh, "Raw output:   %u transfers, %u bytes dropped, %u lease ends", raw->xfers,
+		    raw->dropped, raw->raw_lease_ends);
+}
+
 static void print_ddc(const struct shell *sh)
 {
 	struct sample_src_stats ddc;
 	char buf[SI_FMT_LEN];
 
 	sample_src_get_stats(&ddc);
+
+	if (ddc.mode == SAMPLE_SRC_MODE_RAW) {
+		print_raw(sh, &ddc);
+		return;
+	}
 
 	if (!ddc.planned) {
 		shell_print(sh, "DDC:          %s, no plan", ddc.running ? "running" : "stopped");
@@ -84,6 +111,7 @@ static void print_ddc(const struct shell *sh)
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
 	struct rtl2832u_status status;
+	struct sample_src_stats src;
 	char buf[SI_FMT_LEN];
 	int32_t gain;
 
@@ -95,7 +123,11 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "USB:          %s, %s", status.configured ? "configured" : "not configured",
 		    status.streaming ? "streaming" : "idle");
 	shell_print(sh, "Host driver:  %s", status.host_open ? "open" : "closed");
-	shell_print(sh, "Output:       %s", status.test_mode ? "test counter" : "ADC I/Q");
+	sample_src_get_stats(&src);
+	shell_print(sh, "Output:       %s",
+		    status.test_mode                    ? "test counter"
+		    : (src.mode == SAMPLE_SRC_MODE_RAW) ? "raw ADC samples, framed"
+							: "ADC I/Q");
 	shell_print(sh, "Sample rate:  %s", si_fmt(buf, sizeof(buf), status.sample_rate, "S/s"));
 	shell_print(sh, "Center freq:  %s", si_fmt(buf, sizeof(buf), status.center_freq, "Hz"));
 	shell_print(sh, "Tuner LO:     %s", si_fmt(buf, sizeof(buf), status.lo_freq, "Hz"));
@@ -626,6 +658,24 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_adc,
 	SHELL_SUBCMD_SET_END
 );
 
+static int cmd_mode(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+
+	if (strcmp(argv[1], "iq") == 0) {
+		sample_src_set_mode(SAMPLE_SRC_MODE_IQ);
+	} else if (strcmp(argv[1], "raw") == 0) {
+		sample_src_set_mode(SAMPLE_SRC_MODE_RAW);
+	} else {
+		shell_error(sh, "Mode is iq or raw");
+		return -EINVAL;
+	}
+
+	shell_print(sh, "Output %s", argv[1]);
+
+	return 0;
+}
+
 static int cmd_testsig(const struct shell *sh, size_t argc, char **argv)
 {
 	char buf[SI_FMT_LEN];
@@ -814,6 +864,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_welle_sdr,
 	SHELL_CMD_ARG(testsig, NULL, "Square wave on PA7 for AD IN: <hz> or off", cmd_testsig,
 		      2, 0),
 	SHELL_CMD_ARG(demod, NULL, "Dump demod registers: <page> <reg> [len]", cmd_demod, 3, 1),
+	SHELL_CMD_ARG(mode, NULL, "Stream format: iq or raw (raw ends when the host stops reading)",
+		      cmd_mode, 2, 0),
 	SHELL_SUBCMD_SET_END
 );
 
