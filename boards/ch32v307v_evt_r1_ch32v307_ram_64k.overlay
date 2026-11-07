@@ -115,7 +115,7 @@
 			pinmux = <TIM1_CH1_PA8_0>;
 			output-high;
 			drive-push-pull;
-			slew-rate = "max-speed-50mhz";
+			slew-rate = "max-speed-2mhz";
 		};
 	};
 
