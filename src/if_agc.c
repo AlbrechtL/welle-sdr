@@ -47,6 +47,8 @@ LOG_MODULE_REGISTER(if_agc, LOG_LEVEL_INF);
 
 /* PWM mode 1 for channel 1: output high while CNT < CH1CVR */
 #define IF_AGC_OC1M_PWM1 (6U << 4)
+/* Channel 1 output forced low */
+#define IF_AGC_OC1M_LOW  (4U << 4)
 
 BUILD_ASSERT(CONFIG_WELLE_SDR_IF_AGC_MIN_MV < CONFIG_WELLE_SDR_IF_AGC_MAX_MV,
 	     "IF AGC voltage range is empty");
@@ -64,10 +66,14 @@ static bool pwm_ready;
 /* Serializes the compare register and stats between the producer, USB and shell threads */
 static struct k_spinlock lock;
 static struct if_agc_stats stats = {
+	.pwm_on = IS_ENABLED(CONFIG_WELLE_SDR_IF_AGC_PWM),
 	.fixed_mv = CONFIG_WELLE_SDR_IF_AGC_FIXED_MV,
 	.target_q4 = CONFIG_WELLE_SDR_IF_AGC_TARGET * 16U,
 };
 static atomic_t active;
+static atomic_t pwm_off = ATOMIC_INIT(IS_ENABLED(CONFIG_WELLE_SDR_IF_AGC_PWM) ? 0 : 1);
+/* Serializes the VGA control switch between the USB and shell threads */
+static K_MUTEX_DEFINE(mode_lock);
 /* Set to make the producer restart the loop from the current compare value */
 static atomic_t restart;
 
@@ -76,6 +82,26 @@ static void set_counts(uint16_t counts)
 {
 	tim->CH1CVR = counts;
 	stats.counts = counts;
+}
+
+/* Switch the VGA control for the loop and PWM state, called with mode_lock held */
+static void vga_control_update(void)
+{
+	enum r820t2_vga_ctl ctl = R820T2_VGA_CTL_HOST;
+	int err;
+
+	if (atomic_get(&pwm_off) != 0) {
+		ctl = R820T2_VGA_CTL_REGISTER;
+	} else if (atomic_get(&active) != 0) {
+		ctl = R820T2_VGA_CTL_PIN;
+	} else {
+		/* Host's setting */
+	}
+
+	err = r820t2_set_vga_control(ctl);
+	if (err != 0) {
+		LOG_WRN("VGA control not switched (err %d)", err);
+	}
 }
 
 int if_agc_init(void)
@@ -91,9 +117,10 @@ int if_agc_init(void)
 	tim->CTLR1 = 0U;
 	tim->PSC = 0U;
 	tim->ATRLR = (uint16_t)(IF_AGC_CTL_PERIOD - 1U);
-	tim->CHCTLR1 = (tim->CHCTLR1 & ~(TIM_OC1M | TIM_OC1PE)) | IF_AGC_OC1M_PWM1 | TIM_OC1PE;
 
 	K_SPINLOCK(&lock) {
+		tim->CHCTLR1 = (tim->CHCTLR1 & ~(TIM_OC1M | TIM_OC1PE)) |
+			       (stats.pwm_on ? IF_AGC_OC1M_PWM1 : IF_AGC_OC1M_LOW) | TIM_OC1PE;
 		set_counts(if_agc_ctl_mv_to_counts(stats.fixed_mv));
 	}
 
@@ -111,19 +138,48 @@ int if_agc_init(void)
 
 	pwm_ready = true;
 
-	LOG_INF("IF AGC PWM at %u mV", stats.fixed_mv);
+	/* With the PWM off the VGA gain must not follow the pin at 0 V */
+	k_mutex_lock(&mode_lock, K_FOREVER);
+	vga_control_update();
+	k_mutex_unlock(&mode_lock);
+
+	if (stats.pwm_on) {
+		LOG_INF("IF AGC PWM at %u mV", stats.fixed_mv);
+	} else {
+		LOG_INF("IF AGC PWM off, PA15 at 0 V");
+	}
 
 	return 0;
 }
 
+void if_agc_set_pwm(bool on)
+{
+	k_mutex_lock(&mode_lock, K_FOREVER);
+
+	(void)atomic_set(&restart, 1);
+	(void)atomic_set(&pwm_off, on ? 0 : 1);
+
+	K_SPINLOCK(&lock) {
+		tim->CHCTLR1 = (tim->CHCTLR1 & ~TIM_OC1M) |
+			       (on ? IF_AGC_OC1M_PWM1 : IF_AGC_OC1M_LOW);
+		stats.pwm_on = on;
+	}
+
+	vga_control_update();
+
+	k_mutex_unlock(&mode_lock);
+
+	LOG_INF("IF AGC PWM %s", on ? "on" : "off, PA15 at 0 V");
+}
+
 void if_agc_set_active(bool on)
 {
-	int err;
-
 	/* Only called from the USB thread */
 	if ((atomic_get(&active) != 0) == on) {
 		return;
 	}
+
+	k_mutex_lock(&mode_lock, K_FOREVER);
 
 	/* Before the loop becomes active, so the producer initializes it first */
 	(void)atomic_set(&restart, 1);
@@ -138,10 +194,9 @@ void if_agc_set_active(bool on)
 		}
 	}
 
-	err = r820t2_set_vga_pin_mode(on);
-	if (err != 0) {
-		LOG_WRN("VGA mode not switched (err %d)", err);
-	}
+	vga_control_update();
+
+	k_mutex_unlock(&mode_lock);
 
 	LOG_INF("IF AGC %s", on ? "on" : "off");
 }
@@ -180,7 +235,7 @@ void if_agc_process(const uint8_t *in, size_t len, uint32_t adc_rate)
 	static uint32_t samples;
 	uint16_t counts;
 
-	if (atomic_get(&active) == 0) {
+	if (atomic_get(&active) == 0 || atomic_get(&pwm_off) != 0) {
 		return;
 	}
 

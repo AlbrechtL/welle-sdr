@@ -37,6 +37,12 @@ static void print_if_agc_line(const struct shell *sh)
 	int32_t mag;
 
 	if_agc_get_stats(&agc);
+
+	if (!agc.pwm_on) {
+		shell_print(sh, "IF AGC:       PWM off, PA15 at 0 V, VGA gain from its register");
+		return;
+	}
+
 	gain = if_agc_ctl_gain(agc.counts);
 	/* Sign printed separately, so -0.5 dB keeps it */
 	mag = (gain < 0) ? -gain : gain;
@@ -156,7 +162,9 @@ static void print_fields(const struct shell *sh, const uint8_t *regs, bool pll_p
 	shell_print(sh, "RF AGC:       LNA index %u, mixer index %u (register 3)", f.agc_lna_idx,
 		    f.agc_mixer_idx);
 
-	if (f.vga_pin) {
+	if (!f.vga_on) {
+		shell_print(sh, "VGA:          off");
+	} else if (f.vga_pin) {
 		shell_print(sh, "VGA:          IF_AGC pin");
 	} else {
 		shell_print(sh, "VGA:          register, code %u", f.vga_code);
@@ -668,7 +676,8 @@ static int cmd_agc(const struct shell *sh, size_t argc, char **argv)
 	if_agc_get_stats(&agc);
 
 	shell_print(sh, "Switch:       host RTL AGC %s", agc.active ? "on" : "off");
-	shell_print(sh, "PWM:          %u of %u counts on PA15", agc.counts, IF_AGC_CTL_PERIOD);
+	shell_print(sh, "PWM:          %s, %u of %u counts on PA15", agc.pwm_on ? "on" : "off",
+		    agc.counts, IF_AGC_CTL_PERIOD);
 	shell_print(sh, "Fixed:        %u mV (range %u to %u mV)", agc.fixed_mv,
 		    CONFIG_WELLE_SDR_IF_AGC_MIN_MV, CONFIG_WELLE_SDR_IF_AGC_MAX_MV);
 	shell_print(sh, "Target:       MAD %u.%02u codes", agc.target_q4 / 16U,
@@ -710,6 +719,24 @@ static int cmd_agc_fixed(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_agc_pwm(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+
+	if (strcmp(argv[1], "off") == 0) {
+		if_agc_set_pwm(false);
+	} else if (strcmp(argv[1], "on") == 0) {
+		if_agc_set_pwm(true);
+	} else {
+		shell_error(sh, "Use on or off");
+		return -EINVAL;
+	}
+
+	print_if_agc_line(sh);
+
+	return 0;
+}
+
 static int cmd_agc_target(const struct shell *sh, size_t argc, char **argv)
 {
 	unsigned long codes;
@@ -728,14 +755,51 @@ static int cmd_agc_target(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_agc,
 	SHELL_CMD_ARG(fixed, NULL, "Voltage while the loop is off: <mV>", cmd_agc_fixed, 2, 0),
+	SHELL_CMD_ARG(pwm, NULL,
+		      "Stop the PWM (PA15 at 0 V, VGA gain from its register) or run it: "
+		      "<on|off>",
+		      cmd_agc_pwm, 2, 0),
 	SHELL_CMD_ARG(target, NULL, "Level the loop aims at, MAD of the ADC codes: <codes>",
 		      cmd_agc_target, 2, 0),
 	SHELL_SUBCMD_SET_END
 );
 
+static int cmd_tuner_vga(const struct shell *sh, size_t argc, char **argv)
+{
+	struct r820t2_fields f;
+	int err;
+
+	if (argc > 1) {
+		if (strcmp(argv[1], "off") == 0) {
+			err = r820t2_set_vga_off(true);
+		} else if (strcmp(argv[1], "on") == 0) {
+			err = r820t2_set_vga_off(false);
+		} else {
+			shell_error(sh, "Use on or off");
+			return -EINVAL;
+		}
+
+		if (err != 0) {
+			shell_error(sh, "Writing register 0x0c failed (err %d)", err);
+			return err;
+		}
+	}
+
+	r820t2_decode(r820t2_regs(), &f);
+	shell_print(sh, "VGA:          %s, now %s", r820t2_vga_off() ? "forced off" : "as written",
+		    !r820t2_vga_written() ? "not written yet"
+					  : (f.vga_on ? "powered on" : "powered off"));
+
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tuner,
 	SHELL_CMD_ARG(regs, NULL, "Dump and decode the R820T2 registers, [live] reads the chip",
 		      cmd_tuner_regs, 1, 1),
+	SHELL_CMD_ARG(vga, NULL,
+		      "Power the VGA off whatever the host writes, or follow the host: "
+		      "[on|off]",
+		      cmd_tuner_vga, 1, 1),
 	SHELL_CMD_ARG(test, NULL,
 		      "Check the wiring and read the chip, or tune without a host: [lo_hz]",
 		      cmd_tuner_test, 1, 1),

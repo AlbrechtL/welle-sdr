@@ -21,6 +21,14 @@ config WELLE_SDR_XFER_COUNT
 
 menu "IF AGC"
 
+config WELLE_SDR_IF_AGC_PWM
+	bool "Run the IF_AGC PWM from boot"
+	help
+	  Start the PWM on PA15 at boot. Without it PA15 stays at 0 V, the
+	  R820T2 VGA gain comes from its register whatever the host writes,
+	  and the IF AGC loop does not run, also with the host's RTL AGC on,
+	  until "welle-sdr agc pwm on".
+
 config WELLE_SDR_IF_AGC_FIXED_MV
 	int "IF_AGC voltage while the loop is off, in mV"
 	default 1550

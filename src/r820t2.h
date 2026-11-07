@@ -71,6 +71,8 @@ struct r820t2_fields {
 	uint8_t vga_code;
 	/** Register 0x0c bit 4: VGA gain set by the IF_AGC pin, not by @ref vga_code. */
 	bool vga_pin;
+	/** Register 0x0c bit 6: VGA powered on. */
+	bool vga_on;
 	/** Register 0x10 bits 7:5: mixer divider, 2 << field (2 to 256). */
 	uint16_t mix_div;
 	/** Register 0x10 bit 4: PLL reference divided by 2. */
@@ -89,6 +91,16 @@ struct r820t2_fields {
 	uint64_t vco_hz;
 	/** LO frequency in Hz, VCO / mixer divider. */
 	uint32_t lo_hz;
+};
+
+/** Source of the VGA gain, register 0x0c bit 4. */
+enum r820t2_vga_ctl {
+	/** Bit 4 as written by the host. */
+	R820T2_VGA_CTL_HOST,
+	/** Bit 4 set in every write: gain from the IF_AGC pin. */
+	R820T2_VGA_CTL_PIN,
+	/** Bit 4 cleared in every write: gain from the VGA code. */
+	R820T2_VGA_CTL_REGISTER,
 };
 
 /** Tuner bus wiring state. */
@@ -120,8 +132,9 @@ int r820t2_init(void);
 /**
  * @brief Forward an I2C write from the host to the tuner.
  *
- * Updates the register shadow when the tuner acknowledges the write. Sets
- * register 0x0c bit 4 while r820t2_set_vga_pin_mode() is on.
+ * Updates the register shadow when the tuner acknowledges the write. Forces
+ * register 0x0c bit 4 as selected with r820t2_set_vga_control() and clears
+ * bit 6 while r820t2_set_vga_off() is on.
  *
  * @param data First byte is the start register, followed by register values.
  * @param len Number of bytes in @p data.
@@ -154,19 +167,46 @@ int r820t2_i2c_read(uint8_t *data, size_t len);
 /**
  * @brief Select the VGA gain control.
  *
- * While on, register 0x0c bit 4 (VGA gain from the IF_AGC pin) is set in
- * every host write. Switching writes register 0x0c: the host's last value
- * with bit 4 set (on) or unchanged (off). Nothing is written before the host
- * has written register 0x0c.
+ * Switching writes register 0x0c: the last written value with bit 4 forced
+ * as selected. Nothing is written before register 0x0c has been written once.
  *
- * @param on VGA gain from the IF_AGC pin.
+ * @param ctl Source of the VGA gain.
  *
  * @retval 0 Success.
  * @retval -ENODEV I2C controller not ready.
  * @retval -EIO Wiring fault or no acknowledge.
  * @retval -ETIMEDOUT Transfer timed out.
  */
-int r820t2_set_vga_pin_mode(bool on);
+int r820t2_set_vga_control(enum r820t2_vga_ctl ctl);
+
+/**
+ * @brief Power the VGA off, whatever the host writes.
+ *
+ * While on, register 0x0c bit 6 (VGA power) is cleared in every write, by
+ * the host and by the standalone tune. Switching writes register 0x0c: the
+ * last written value with bit 6 cleared (on) or as written (off). Nothing is
+ * written before register 0x0c has been written once.
+ *
+ * @param off VGA powered off.
+ *
+ * @retval 0 Success.
+ * @retval -ENODEV I2C controller not ready.
+ * @retval -EIO Wiring fault or no acknowledge.
+ * @retval -ETIMEDOUT Transfer timed out.
+ */
+int r820t2_set_vga_off(bool off);
+
+/**
+ * @retval true The VGA is forced off by r820t2_set_vga_off().
+ * @retval false The VGA power follows the written register value.
+ */
+bool r820t2_vga_off(void);
+
+/**
+ * @retval true Register 0x0c has been written by the host or the standalone tune.
+ * @retval false Register 0x0c holds its power-on value, the shadow does not know it.
+ */
+bool r820t2_vga_written(void);
 
 /**
  * @return Register shadow, not bit-reversed: registers 0 to 4 as last read

@@ -15,6 +15,8 @@
 struct if_agc_stats {
 	/** The loop controls the IF_AGC voltage. */
 	bool active;
+	/** The PWM runs; off, PA15 stays at 0 V and the loop pauses. */
+	bool pwm_on;
 	/** Current PWM compare value. */
 	uint16_t counts;
 	/** Voltage while the loop is off, in mV. */
@@ -32,7 +34,10 @@ struct if_agc_stats {
 };
 
 /**
- * @brief Start the PWM on the IF_AGC pin at the fixed voltage.
+ * @brief Set up the PWM on the IF_AGC pin.
+ *
+ * Runs it at the fixed voltage with CONFIG_WELLE_SDR_IF_AGC_PWM, otherwise
+ * holds the pin at 0 V and forces register control of the VGA gain.
  *
  * @retval 0 Success.
  * @retval -EIO Clock or pin configuration failed.
@@ -49,6 +54,17 @@ int if_agc_init(void);
  * @param on Loop on.
  */
 void if_agc_set_active(bool on);
+
+/**
+ * @brief Run or stop the PWM.
+ *
+ * Off: PA15 stays at 0 V without edges, the R820T2 VGA gain comes from its
+ * register whatever the host writes, and the loop pauses. On: the PWM runs
+ * again and the VGA control follows the loop state.
+ *
+ * @param on PWM runs.
+ */
+void if_agc_set_pwm(bool on);
 
 /**
  * @brief Feed one block of ADC codes to the loop.

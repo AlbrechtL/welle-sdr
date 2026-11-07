@@ -56,9 +56,13 @@ LOG_MODULE_REGISTER(r820t2, LOG_LEVEL_INF);
 /* Register 3: gains picked by the RF AGC, LNA index (bits 3:0), mixer index (bits 7:4) */
 #define R820T2_REG_AGC        0x03U
 #define R820T2_AGC_MIXER_SHIFT 4U
-/* Register 0x0c: VGA gain code (bits 3:0), bit 4 VGA gain from the IF_AGC pin */
+/*
+ * Register 0x0c: VGA gain code (bits 3:0), bit 4 VGA gain from the IF_AGC
+ * pin, bit 6 VGA powered on
+ */
 #define R820T2_REG_VGA        0x0CU
 #define R820T2_VGA_PIN        0x10U
+#define R820T2_VGA_POWER      0x40U
 /* Register 0x10: divider (bits 7:5), reference divided by 2 (bit 4) */
 #define R820T2_REG_DIV        0x10U
 #define R820T2_DIV_SHIFT      5U
@@ -134,11 +138,12 @@ static bool pll_valid;
 /* The PLL dividers were written since the last read */
 static bool pll_changed;
 static struct r820t2_bus_diag diag;
-/* Register 0x0c bit 4 is set in every host write */
-static bool vga_pin_forced;
-/* Last register 0x0c value the host wrote */
-static uint8_t host_vga;
-static bool host_vga_valid;
+/* Register 0x0c bits set and cleared in every write, over the written value */
+static uint8_t vga_force_set;
+static uint8_t vga_force_clear;
+/* Last register 0x0c value written by the host or the standalone tune, before forcing */
+static uint8_t vga_base;
+static bool vga_base_valid;
 
 /* LNA and mixer gain steps in 0.1 dB, as in librtlsdr tuner_r82xx.c */
 static const int8_t lna_gain_steps[16] = {
@@ -345,8 +350,8 @@ int r820t2_init(void)
 	memset(regs, 0, sizeof(regs));
 	pll_valid = false;
 	pll_changed = false;
-	vga_pin_forced = false;
-	host_vga_valid = false;
+	/* The forced 0x0c bits belong to their callers and stay */
+	vga_base_valid = false;
 	diag.last_err = R820T2_BUS_OK;
 
 	err = bus_read(&raw, 1U);
@@ -374,25 +379,27 @@ static size_t vga_offset(const uint8_t *data, size_t len)
 	return R820T2_REG_VGA - data[0] + 1U;
 }
 
-int r820t2_i2c_write(const uint8_t *data, size_t len)
+/* Register 0x0c value with the forced bits applied, called with tuner_lock held */
+static uint8_t vga_forced(uint8_t val)
+{
+	return (uint8_t)((val | vga_force_set) & ~vga_force_clear);
+}
+
+/*
+ * Write a block with the forced register 0x0c bits applied and record the
+ * unforced value, called with tuner_lock held. A block longer than the
+ * register file is never written by librtlsdr; it is passed on as is.
+ */
+static int vga_block_write(const uint8_t *data, size_t len)
 {
 	uint8_t forced[R820T2_NUM_REGS + 1U];
+	const size_t vga = vga_offset(data, len);
 	const uint8_t *out = data;
-	size_t vga;
 	int err;
 
-	if (len == 0U) {
-		return -EINVAL;
-	}
-
-	vga = vga_offset(data, len);
-
-	k_mutex_lock(&tuner_lock, K_FOREVER);
-
-	/* A block beyond the register file is never written by librtlsdr; it is passed on as is */
-	if (vga_pin_forced && vga != 0U && len <= sizeof(forced)) {
+	if (vga != 0U && len <= sizeof(forced)) {
 		memcpy(forced, data, len);
-		forced[vga] |= R820T2_VGA_PIN;
+		forced[vga] = vga_forced(data[vga]);
 		out = forced;
 	}
 
@@ -401,10 +408,48 @@ int r820t2_i2c_write(const uint8_t *data, size_t len)
 		shadow_write(out, len);
 
 		if (vga != 0U) {
-			host_vga = data[vga];
-			host_vga_valid = true;
+			vga_base = data[vga];
+			vga_base_valid = true;
 		}
 	}
+
+	return err;
+}
+
+/* Write register 0x0c with the current forced bits, called with tuner_lock held */
+static int vga_update(void)
+{
+	uint8_t buf[2] = {R820T2_REG_VGA, 0U};
+	int err;
+
+	/*
+	 * The shadow is 0 until register 0x0c has been written; a value derived
+	 * from it would also clear the fixed bits 7 and 5.
+	 */
+	if (!vga_base_valid) {
+		return 0;
+	}
+
+	buf[1] = vga_forced(vga_base);
+	err = bus_write(buf, sizeof(buf));
+	if (err == 0) {
+		shadow_write(buf, sizeof(buf));
+	}
+
+	return err;
+}
+
+int r820t2_i2c_write(const uint8_t *data, size_t len)
+{
+	int err;
+
+	if (len == 0U) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&tuner_lock, K_FOREVER);
+
+	err = vga_block_write(data, len);
 
 	k_mutex_unlock(&tuner_lock);
 
@@ -496,6 +541,7 @@ void r820t2_decode(const uint8_t *r, struct r820t2_fields *f)
 	f->agc_mixer_idx = r[R820T2_REG_AGC] >> R820T2_AGC_MIXER_SHIFT;
 	f->vga_code = r[R820T2_REG_VGA] & R820T2_GAIN_IDX_MASK;
 	f->vga_pin = (r[R820T2_REG_VGA] & R820T2_VGA_PIN) != 0U;
+	f->vga_on = (r[R820T2_REG_VGA] & R820T2_VGA_POWER) != 0U;
 
 	f->mix_div = (uint16_t)(2U << (div >> R820T2_DIV_SHIFT));
 	f->refdiv2 = (div & R820T2_REFDIV2) != 0U;
@@ -542,31 +588,57 @@ bool r820t2_manual_gain(int32_t *gain_tenth_db)
 	return true;
 }
 
-int r820t2_set_vga_pin_mode(bool on)
+int r820t2_set_vga_control(enum r820t2_vga_ctl ctl)
 {
-	int err = 0;
+	int err;
 
 	k_mutex_lock(&tuner_lock, K_FOREVER);
 
-	vga_pin_forced = on;
+	vga_force_set &= (uint8_t)~R820T2_VGA_PIN;
+	vga_force_clear &= (uint8_t)~R820T2_VGA_PIN;
 
-	/*
-	 * The shadow is 0 until the host writes 0x0c; writing a value derived
-	 * from it would clear bit 6 and power the VGA off.
-	 */
-	if (host_vga_valid) {
-		const uint8_t buf[2] = {R820T2_REG_VGA,
-					on ? (uint8_t)(host_vga | R820T2_VGA_PIN) : host_vga};
-
-		err = bus_write(buf, sizeof(buf));
-		if (err == 0) {
-			shadow_write(buf, sizeof(buf));
-		}
+	if (ctl == R820T2_VGA_CTL_PIN) {
+		vga_force_set |= R820T2_VGA_PIN;
+	} else if (ctl == R820T2_VGA_CTL_REGISTER) {
+		vga_force_clear |= R820T2_VGA_PIN;
+	} else {
+		/* Bit 4 as written */
 	}
+
+	err = vga_update();
 
 	k_mutex_unlock(&tuner_lock);
 
 	return err;
+}
+
+int r820t2_set_vga_off(bool off)
+{
+	int err;
+
+	k_mutex_lock(&tuner_lock, K_FOREVER);
+
+	if (off) {
+		vga_force_clear |= R820T2_VGA_POWER;
+	} else {
+		vga_force_clear &= (uint8_t)~R820T2_VGA_POWER;
+	}
+
+	err = vga_update();
+
+	k_mutex_unlock(&tuner_lock);
+
+	return err;
+}
+
+bool r820t2_vga_off(void)
+{
+	return (vga_force_clear & R820T2_VGA_POWER) != 0U;
+}
+
+bool r820t2_vga_written(void)
+{
+	return vga_base_valid;
 }
 
 void r820t2_bus_check(struct r820t2_bus_diag *out)
@@ -741,9 +813,8 @@ int r820t2_standalone_tune(uint32_t lo_hz)
 
 	k_mutex_lock(&tuner_lock, K_FOREVER);
 
-	err = bus_write(buf, sizeof(buf));
+	err = vga_block_write(buf, sizeof(buf));
 	if (err == 0) {
-		shadow_write(buf, sizeof(buf));
 		err = pll_tune(lo_hz, R820T2_VCO_CUR_FIRST);
 	}
 
