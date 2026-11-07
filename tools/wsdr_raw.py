@@ -36,6 +36,11 @@ FLAG_INVERTED = 1 << 0
 FLAG_ALIASED = 1 << 1
 
 CHUNK = 16 * 32 * 512
+# Host transfers kept queued, as librtlsdr's default
+ASYNC_BUFS = 15
+READ_CB = ctypes.CFUNCTYPE(
+    None, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_uint32, ctypes.c_void_p
+)
 
 
 def knock_rates(mode):
@@ -61,14 +66,18 @@ class LocalDevice:
                 ctypes.c_uint32,
             ]
         self.lib.rtlsdr_set_tuner_gain_mode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.rtlsdr_set_tuner_gain.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.rtlsdr_set_agc_mode.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.lib.rtlsdr_reset_buffer.argtypes = [ctypes.c_void_p]
         self.lib.rtlsdr_close.argtypes = [ctypes.c_void_p]
-        self.lib.rtlsdr_read_sync.argtypes = [
+        self.lib.rtlsdr_read_async.argtypes = [
             ctypes.c_void_p,
+            READ_CB,
             ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_uint32,
+            ctypes.c_uint32,
         ]
+        self.lib.rtlsdr_cancel_async.argtypes = [ctypes.c_void_p]
         self.lib.rtlsdr_get_usb_strings.argtypes = [ctypes.c_void_p] + [
             ctypes.c_char_p
         ] * 3
@@ -91,21 +100,33 @@ class LocalDevice:
     def set_auto_gain(self):
         self.lib.rtlsdr_set_tuner_gain_mode(self.dev, 0)
 
+    def set_gain(self, tenth_db):
+        self.lib.rtlsdr_set_tuner_gain_mode(self.dev, 1)
+        self.lib.rtlsdr_set_tuner_gain(self.dev, tenth_db)
+
+    def set_rtl_agc(self, on):
+        self.lib.rtlsdr_set_agc_mode(self.dev, 1 if on else 0)
+
     def start(self):
         self.lib.rtlsdr_reset_buffer(self.dev)
 
     def read(self, size):
-        buf = ctypes.create_string_buffer(CHUNK)
-        out = bytearray()
-        n_read = ctypes.c_int()
-        while len(out) < size:
-            if (
-                self.lib.rtlsdr_read_sync(self.dev, buf, CHUNK, ctypes.byref(n_read))
-                != 0
-            ):
-                sys.exit("read_sync failed")
-            out += buf.raw[: n_read.value]
-        return bytes(out)
+        # Asynchronous, so that host transfers stay queued while Python copies
+        chunks = []
+        total = 0
+
+        def callback(buf, length, _ctx):
+            nonlocal total
+            if total < size:
+                chunks.append(ctypes.string_at(buf, length))
+                total += length
+                if total >= size:
+                    self.lib.rtlsdr_cancel_async(self.dev)
+
+        cb = READ_CB(callback)
+        if self.lib.rtlsdr_read_async(self.dev, cb, None, ASYNC_BUFS, CHUNK) != 0:
+            sys.exit("read_async failed")
+        return b"".join(chunks)[:size]
 
     def close(self):
         self.lib.rtlsdr_close(self.dev)
@@ -143,6 +164,13 @@ class TcpDevice:
 
     def set_auto_gain(self):
         self.command(0x03, 0)
+
+    def set_gain(self, tenth_db):
+        self.command(0x03, 1)
+        self.command(0x04, tenth_db)
+
+    def set_rtl_agc(self, on):
+        self.command(0x08, 1 if on else 0)
 
     def start(self):
         """rtl_tcp streams from the connection on."""
@@ -245,6 +273,12 @@ def main():
         "-n", "--bytes", type=int, default=8000000, help="bytes to capture"
     )
     parser.add_argument(
+        "-g", "--gain", type=float, help="tuner gain in dB (default auto)"
+    )
+    parser.add_argument(
+        "--rtl-agc", action="store_true", help="RTL AGC on (welle-sdr: IF AGC loop)"
+    )
+    parser.add_argument(
         "--mode", choices=["raw", "iq"], default="raw", help="mode to knock"
     )
     parser.add_argument(
@@ -264,7 +298,11 @@ def main():
             for rate in knock_rates(mode):
                 dev.set_rate(rate)
         dev.set_rate(args.rate)
-        dev.set_auto_gain()
+        if args.gain is None:
+            dev.set_auto_gain()
+        else:
+            dev.set_gain(round(args.gain * 10))
+        dev.set_rtl_agc(args.rtl_agc)
         dev.start()
         start = time.monotonic()
         data = dev.read(args.bytes)
