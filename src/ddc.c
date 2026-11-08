@@ -322,6 +322,22 @@ static inline void ddc_emit(const struct ddc_cfg *cfg, struct ddc_run *r, uint32
 	out[1] = ddc_to_u8(yq);
 }
 
+/* Second integrators after a mixed input, emit at the decimation step */
+static inline size_t ddc_tick(const struct ddc_cfg *cfg, struct ddc_run *r, uint8_t *out)
+{
+	r->int2_i += r->int1_i;
+	r->int2_q += r->int1_q;
+	r->count++;
+
+	if (r->count == cfg->decim) {
+		r->count = 0U;
+		ddc_emit(cfg, r, r->int2_i, r->int2_q, out);
+		return 2U;
+	}
+
+	return 0U;
+}
+
 /* One input sample: mix by 1, -j, -1, +j, integrate, emit at the decimation step */
 static inline size_t ddc_step(const struct ddc_cfg *cfg, struct ddc_run *r, uint8_t in,
 			      uint8_t *out)
@@ -344,75 +360,97 @@ static inline size_t ddc_step(const struct ddc_cfg *cfg, struct ddc_run *r, uint
 	}
 
 	r->mix = (r->mix + 1U) & 3U;
-	r->int2_i += r->int1_i;
-	r->int2_q += r->int1_q;
-	r->count++;
 
-	if (r->count == cfg->decim) {
-		r->count = 0U;
-		ddc_emit(cfg, r, r->int2_i, r->int2_q, out);
-		return 2U;
-	}
-
-	return 0U;
+	return ddc_tick(cfg, r, out);
 }
 
 /*
- * Four inputs starting at mixer phase 0. With I0, Q0 the first and A, B the
- * second integrators before the group, after j inputs:
- *   j = 1: A + I0 + x0,         B + Q0
- *   j = 2: A + 2 (I0 + x0),     B + 2 Q0 - x1
- *   j = 3: A + 3 (I0 + x0) - x2, B + 3 Q0 - 2 x1
- *   j = 4: A + 4 (I0 + x0) - 2 x2, B + 4 Q0 - 3 x1 + x3
+ * Groups of four inputs from mixer phase 0, for a decimation that is a
+ * multiple of 4. Outputs fall on group ends: only the end state of each
+ * group, from raw codes; the +-128 offsets leave -256 and +256 per group.
+ * This and ddc_groups() are kept out of line so that each loop gets the
+ * registers to itself.
  */
-static inline size_t ddc_group(const struct ddc_cfg *cfg, struct ddc_run *r, const uint8_t *in,
-			       uint8_t *out)
+static __attribute__((noinline)) size_t ddc_groups4(const struct ddc_cfg *cfg,
+						    struct ddc_run *run, const uint8_t *in,
+						    size_t groups, uint8_t *out)
 {
-	const uint32_t x0 = (uint32_t)((int32_t)in[0] - 128);
-	const uint32_t x1 = (uint32_t)((int32_t)in[1] - 128);
-	const uint32_t x2 = (uint32_t)((int32_t)in[2] - 128);
-	const uint32_t x3 = (uint32_t)((int32_t)in[3] - 128);
-	const uint32_t i0x0 = r->int1_i + x0;
-	const uint32_t q0 = r->int1_q;
-	const uint32_t a = r->int2_i;
-	const uint32_t b = r->int2_q;
-	/* Inputs from the group start to the next output */
-	uint32_t j = cfg->decim - r->count;
+	struct ddc_run r = *run;
+	uint32_t int1_i = r.int1_i;
+	uint32_t int1_q = r.int1_q;
+	uint32_t int2_i = r.int2_i;
+	uint32_t int2_q = r.int2_q;
+	uint32_t count = r.count;
 	size_t written = 0U;
 
-	while (j <= 4U) {
-		uint32_t oi;
-		uint32_t oq;
+	for (size_t g = 0U; g < groups; g++, in += 4) {
+		const uint32_t x0 = in[0];
+		const uint32_t x1 = in[1];
+		const uint32_t x2 = in[2];
+		const uint32_t x3 = in[3];
 
-		switch (j) {
-		case 1U:
-			oi = a + i0x0;
-			oq = b + q0;
-			break;
-		case 2U:
-			oi = a + 2U * i0x0;
-			oq = b + 2U * q0 - x1;
-			break;
-		case 3U:
-			oi = a + 3U * i0x0 - x2;
-			oq = b + 3U * q0 - 2U * x1;
-			break;
-		default:
-			oi = a + 4U * i0x0 - 2U * x2;
-			oq = b + 4U * q0 - 3U * x1 + x3;
-			break;
+		int2_i += 4U * (int1_i + x0) - 2U * x2 - 256U;
+		int2_q += 4U * int1_q - 3U * x1 + x3 + 256U;
+		int1_i += x0 - x2;
+		int1_q += x3 - x1;
+		count += 4U;
+
+		if (count == cfg->decim) {
+			count = 0U;
+			ddc_emit(cfg, &r, int2_i, int2_q, &out[written]);
+			written += 2U;
 		}
-
-		ddc_emit(cfg, r, oi, oq, &out[written]);
-		written += 2U;
-		j += cfg->decim;
 	}
 
-	r->count = cfg->decim - (j - 4U);
-	r->int2_i = a + 4U * i0x0 - 2U * x2;
-	r->int2_q = b + 4U * q0 - 3U * x1 + x3;
-	r->int1_i = i0x0 - x2;
-	r->int1_q = q0 - x1 + x3;
+	r.int1_i = int1_i;
+	r.int1_q = int1_q;
+	r.int2_i = int2_i;
+	r.int2_q = int2_q;
+	r.count = count;
+	*run = r;
+
+	return written;
+}
+
+/*
+ * Groups of four inputs from mixer phase 0, for a decimation that is not a
+ * multiple of 4. Groups without an output only advance the integrators, as
+ * in ddc_process(); groups with outputs step through their inputs, with the
+ * mixer signs fixed by the group start.
+ */
+static __attribute__((noinline)) size_t ddc_groups(const struct ddc_cfg *cfg,
+						   struct ddc_run *run, const uint8_t *in,
+						   size_t groups, uint8_t *out)
+{
+	struct ddc_run r = *run;
+	size_t written = 0U;
+
+	for (size_t g = 0U; g < groups; g++, in += 4) {
+		if (r.count + 4U < cfg->decim) {
+			const uint32_t x0 = in[0];
+			const uint32_t x1 = in[1];
+			const uint32_t x2 = in[2];
+			const uint32_t x3 = in[3];
+
+			r.int2_i += 4U * (r.int1_i + x0) - 2U * x2 - 256U;
+			r.int2_q += 4U * r.int1_q - 3U * x1 + x3 + 256U;
+			r.int1_i += x0 - x2;
+			r.int1_q += x3 - x1;
+			r.count += 4U;
+			continue;
+		}
+
+		r.int1_i += (uint32_t)((int32_t)in[0] - 128);
+		written += ddc_tick(cfg, &r, &out[written]);
+		r.int1_q -= (uint32_t)((int32_t)in[1] - 128);
+		written += ddc_tick(cfg, &r, &out[written]);
+		r.int1_i -= (uint32_t)((int32_t)in[2] - 128);
+		written += ddc_tick(cfg, &r, &out[written]);
+		r.int1_q += (uint32_t)((int32_t)in[3] - 128);
+		written += ddc_tick(cfg, &r, &out[written]);
+	}
+
+	*run = r;
 
 	return written;
 }
@@ -448,45 +486,11 @@ size_t ddc_process(struct ddc *ddc, const uint8_t *in, size_t n, uint8_t *out)
 	}
 
 	if ((cfg.decim % 4U) == 0U) {
-		/*
-		 * Outputs fall on group ends: only the end state of each group,
-		 * from raw codes; the +-128 offsets leave -256 and +256 per group.
-		 */
-		uint32_t int1_i = r.int1_i;
-		uint32_t int1_q = r.int1_q;
-		uint32_t int2_i = r.int2_i;
-		uint32_t int2_q = r.int2_q;
-		uint32_t count = r.count;
-
-		for (; k + 4U <= n; k += 4U) {
-			const uint32_t x0 = in[k];
-			const uint32_t x1 = in[k + 1U];
-			const uint32_t x2 = in[k + 2U];
-			const uint32_t x3 = in[k + 3U];
-
-			int2_i += 4U * (int1_i + x0) - 2U * x2 - 256U;
-			int2_q += 4U * int1_q - 3U * x1 + x3 + 256U;
-			int1_i += x0 - x2;
-			int1_q += x3 - x1;
-			count += 4U;
-
-			if (count == cfg.decim) {
-				count = 0U;
-				ddc_emit(&cfg, &r, int2_i, int2_q, &out[written]);
-				written += 2U;
-			}
-		}
-
-		r.int1_i = int1_i;
-		r.int1_q = int1_q;
-		r.int2_i = int2_i;
-		r.int2_q = int2_q;
-		r.count = count;
+		written += ddc_groups4(&cfg, &r, &in[k], (n - k) / 4U, &out[written]);
+		k += (n - k) & ~(size_t)3U;
 	} else {
-		while (k + 4U <= n) {
-			written += ddc_group(&cfg, &r, &in[k], &out[written]);
-			k += 4U;
-		}
+		written += ddc_groups(&cfg, &r, &in[k], (n - k) / 4U, &out[written]);
+		k += (n - k) & ~(size_t)3U;
 	}
 
 	while (k < n) {
