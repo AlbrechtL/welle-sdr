@@ -648,7 +648,10 @@ per-sample reference: `west twister -p native_sim -T apps/welle-sdr/tests/ddc`.
 - CPU: 1 MS/s with fs = 4 MS/s needs about 55 % of the CPU. 2 MS/s (estimated 109 % at the
   best plan) does not fit: ADC blocks are lost and the spectrum shows sidebands at the
   block rate. Lost blocks show up as `Spurious IRQs` in `welle-sdr adc status`, as their
-  interrupts arrive late and merge.
+  interrupts arrive late and merge, but most losses do not: compare the block rate with the
+  ADC rate (the display's `Lost`). 1 MS/s loses about 2.4 % of the ADC blocks this way (3814
+  of 3906 blocks per second, 22 spurious IRQs in 12 s); the ADC alone, without the producer,
+  delivers all of them.
 - The CIC droops towards the band edges (-1.1 dB at 0.2 x rate from the band center,
   -7.8 dB at 0.5 x rate) and folds signals around multiples of the output rate into the band
   with limited suppression (about 30 dB for the image of a tone near the center). The band
@@ -723,6 +726,13 @@ The band is IF +/- host rate / 2. The firmware takes the lowest exact rate 144 M
 least 2.2 times the band's upper edge (Nyquist plus 10 % for the tuner's filter skirts), capped
 at `CONFIG_WELLE_SDR_RAW_MAX_RATE` (default 6 MS/s, the highest rate measured without loss
 over USB). If the cap leaves the band's edge above half the ADC rate, flag bit 1 is set.
+At 6 MS/s about 0.25 % of the ADC blocks are still lost before the producer (2922.5 of 2929.7
+blocks per second over 20 s, 3 of them counted as spurious IRQs), see "CPU load and the
+kernel clock". The frame sample index does not show these gaps: it counts the samples the
+producer handled, and `wsdr_raw.py` reports 0 lost samples. The DVP counter registers
+(`ROW_CNT`, `CAPCNT`, `VLINE`) stay 0 in the JPEG mode the driver uses, so they cannot mark
+the gaps either. The bytes dropped in `welle-sdr status` after a raw capture are produced
+during the lease after the host stopped reading, not lost during the capture.
 librtlsdr's R820T driver uses an IF of 1.625 MHz at 2.048 MS/s (band 0.6 .. 2.65 MHz, needs
 5.83 MS/s: 6 MS/s) and 1.7 MHz at 1.0 and 1.024 MS/s (needs 4.87 MS/s: 6 MS/s).
 

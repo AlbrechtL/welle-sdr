@@ -293,8 +293,9 @@ existing files.
   rejected when it differs). Inexact plans are chosen by rate error, not load: 1.024 and
   2.048 MS/s at librtlsdr's R820T IF run above the CPU budget and lose ADC blocks.
 - Raw mode (README "Raw mode") is capped at 6 MS/s (DAB at librtlsdr's IF of 1.625 MHz),
-  measured lossless; 8 MS/s loses about 6 %. The ADC level is too low for welle-cli to sync
-  on 5C (analog front end, README "IF AGC").
+  lossless over USB; 8 MS/s loses about 6 %. About 0.25 % of the ADC blocks are lost before
+  the producer, which the frame sample index does not show (README "Raw mode"). The ADC level
+  is too low for welle-cli to sync on 5C (analog front end, README "IF AGC").
 - Interrupts are held back while a thread runs that an ISR switched to: the PFIC keeps the
   ISR active until a thread resumes through `mret` (README "CPU load and the kernel clock").
   A thread that never blocks stops the kernel clock; tick-based measurements see only the
