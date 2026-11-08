@@ -57,7 +57,8 @@ existing files.
   divisors of 144 MHz: `dvp_adc_start()` rejects others). Both pure C, host tests in
   `tests/raw_mode`.
 - `src/ddc.c`: down-converter (fs / 4 mixer, CIC2, rotation) and rate plan with a CPU load
-  model. Pure C, built with `-O2` (2.2x faster than `-Os`), host tests in `tests/ddc`
+  model. Output gain 2 * sqrt(decimation), folded into the rotation table; the output shift
+  (Q18) is chosen so the products stay within int32 up to decimation 32. Pure C, built with `-O2` (2.2x faster than `-Os`), host tests in `tests/ddc`
   (`west twister -p native_sim -T apps/welle-sdr/tests/ddc`), including a bit-exact
   per-sample reference: keep it in sync when the arithmetic changes.
 - `src/testsig.c`: square wave on PA7 (TIM3_CH2) for AD IN, registers programmed directly

@@ -17,15 +17,17 @@
 #define TEST_OUT_LEN   (2U * TEST_IN_LEN)
 /* Outputs skipped at the start, while the CIC fills */
 #define TEST_SETTLE    8U
-#define TEST_AMPLITUDE 60.0
+/* Tone amplitude in codes: the output gain 2 sqrt(4) keeps it below saturation */
+#define TEST_AMPLITUDE 12.0
 #define TEST_PI        3.14159265358979
 
-/* Real ADC samples of a tone at freq_hz plus dc codes, around code 128 */
-static void make_tone(uint8_t *buf, size_t n, double freq_hz, double dc, uint32_t adc_rate)
+/* Real ADC samples of a tone of amp codes at freq_hz plus dc codes, around code 128 */
+static void make_tone(uint8_t *buf, size_t n, double freq_hz, double amp, double dc,
+		      uint32_t adc_rate)
 {
 	for (size_t k = 0U; k < n; k++) {
-		const double v = 128.0 + dc + TEST_AMPLITUDE * cos(2.0 * TEST_PI * freq_hz *
-								    (double)k / (double)adc_rate);
+		const double v = 128.0 + dc + amp * cos(2.0 * TEST_PI * freq_hz * (double)k /
+							(double)adc_rate);
 
 		buf[k] = (uint8_t)lround(v);
 	}
@@ -88,7 +90,7 @@ static size_t run_tone(double tone_hz, double dc, int32_t if_hz, uint32_t out_ra
 
 	zassert_ok(ddc_plan(out_rate, if_hz, plan));
 	ddc_init(&ddc, plan, if_hz, invert);
-	make_tone(in, TEST_IN_LEN, tone_hz, dc, plan->adc_rate);
+	make_tone(in, TEST_IN_LEN, tone_hz, TEST_AMPLITUDE, dc, plan->adc_rate);
 
 	return ddc_process(&ddc, in, TEST_IN_LEN, out);
 }
@@ -200,16 +202,78 @@ ZTEST(ddc, test_negative_if)
 
 ZTEST(ddc, test_amplitude)
 {
+	/* Tones 30 kHz above the IF; amplitudes keep the output below saturation */
+	static const struct {
+		uint32_t rate;
+		double amp;
+	} cases[] = {
+		{1000000U, 12.0},
+		{250000U, 4.0},
+	};
+	static uint8_t in[TEST_IN_LEN];
+	static uint8_t out[TEST_OUT_LEN];
+
+	for (size_t c = 0U; c < ARRAY_SIZE(cases); c++) {
+		struct ddc_plan plan;
+		struct ddc ddc;
+		size_t len;
+		double f;
+		double h;
+		double expect;
+		double mag;
+
+		zassert_ok(ddc_plan(cases[c].rate, 1100000, &plan));
+		ddc_init(&ddc, &plan, 1100000, false);
+		make_tone(in, TEST_IN_LEN, 1130000.0, cases[c].amp, 0.0, plan.adc_rate);
+		len = ddc_process(&ddc, in, TEST_IN_LEN, out);
+
+		/* CIC response at the tone, from its center at fs / 4, times 2 sqrt(decim) */
+		f = (1130000.0 - (double)plan.adc_rate / 4.0) / (double)plan.adc_rate;
+		h = sin(TEST_PI * f * plan.decim) / (plan.decim * sin(TEST_PI * f));
+		expect = cases[c].amp * h * h * 2.0 * sqrt((double)plan.decim);
+		mag = iq_mag(out, len);
+
+		zassert_within(mag, expect, 0.1 * expect, "rate %u: mag %d, expected %d",
+			       cases[c].rate, (int)mag, (int)expect);
+	}
+}
+
+/*
+ * Noise of +-1 code at the input must still reach the output at high
+ * decimation, not round to a constant code.
+ */
+ZTEST(ddc, test_small_noise)
+{
+	static uint8_t in[TEST_IN_LEN];
 	static uint8_t out[TEST_OUT_LEN];
 	struct ddc_plan plan;
-	const size_t len = run_tone(1150000.0, 0.0, 1100000, 1000000U, false, out, &plan);
-	/* CIC response 150 kHz from its center at fs / 4 */
-	const double f = 150000.0 / (double)plan.adc_rate;
-	const double h = sin(TEST_PI * f * plan.decim) / (plan.decim * sin(TEST_PI * f));
-	const double expect = TEST_AMPLITUDE * h * h;
-	const double mag = iq_mag(out, len);
+	struct ddc ddc;
+	uint32_t lcg = 777U;
+	double sum = 0.0;
+	double sum2 = 0.0;
+	size_t count = 0U;
+	size_t len;
+	double var;
 
-	zassert_within(mag, expect, 0.1 * expect, "mag %d, expected %d", (int)mag, (int)expect);
+	zassert_ok(ddc_plan(250000U, 2124996, &plan));
+	zassert_equal(plan.decim, 32U);
+	ddc_init(&ddc, &plan, 2124996, true);
+
+	for (size_t k = 0U; k < TEST_IN_LEN; k++) {
+		lcg = lcg * 1103515245U + 12345U;
+		in[k] = (uint8_t)(127U + (lcg >> 16) % 3U);
+	}
+
+	len = ddc_process(&ddc, in, TEST_IN_LEN, out);
+
+	for (size_t m = 2U * TEST_SETTLE; m < len; m++) {
+		sum += out[m];
+		sum2 += (double)out[m] * out[m];
+		count++;
+	}
+
+	var = sum2 / (double)count - (sum / (double)count) * (sum / (double)count);
+	zassert_true(var > 0.25, "output variance %d / 100", (int)(var * 100.0));
 }
 
 ZTEST(ddc, test_dc)
@@ -238,7 +302,7 @@ ZTEST(ddc, test_block_boundaries)
 	size_t i = 0U;
 
 	zassert_ok(ddc_plan(2000000U, 1100000, &plan));
-	make_tone(in, TEST_IN_LEN, 1230000.0, 0.0, plan.adc_rate);
+	make_tone(in, TEST_IN_LEN, 1230000.0, TEST_AMPLITUDE, 0.0, plan.adc_rate);
 
 	ddc_init(&ddc, &plan, 1100000, false);
 	ref_len = ddc_process(&ddc, in, TEST_IN_LEN, ref);
@@ -329,7 +393,8 @@ static size_t ref_process(const struct ddc *cfg, struct ref_ddc *r, const uint8_
 
 		if (++r->count == cfg->decim) {
 			const uint32_t idx = r->nco >> 24;
-			const double g = (double)(1UL << 22) / ((double)cfg->decim * cfg->decim);
+			const double g = (double)(1UL << 19) * 2.0 * sqrt((double)cfg->decim) /
+					 ((double)cfg->decim * cfg->decim);
 			const int32_t c = (int32_t)lrint(cos(2.0 * TEST_PI * idx / 256.0) * g);
 			const int32_t s = (int32_t)lrint(cos(2.0 * TEST_PI * ((idx - 64U) & 255U) /
 							     256.0) * g);
@@ -345,8 +410,8 @@ static size_t ref_process(const struct ddc *cfg, struct ref_ddc *r, const uint8_
 			r->comb1_q = r->int2_q;
 			r->comb2_i = c1_i;
 			r->comb2_q = c1_q;
-			out[written++] = ref_clamp((yi + (1 << 20)) >> 21);
-			out[written++] = ref_clamp((yq + (1 << 20)) >> 21);
+			out[written++] = ref_clamp((yi + (1 << 17)) >> 18);
+			out[written++] = ref_clamp((yq + (1 << 17)) >> 18);
 			r->nco += cfg->nco_step;
 		}
 	}

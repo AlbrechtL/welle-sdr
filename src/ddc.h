@@ -69,7 +69,8 @@ struct ddc {
 	int8_t q_sign;
 	/*
 	 * cos and sin of 2 pi i / 256, times the CIC gain correction
-	 * 2 / decim^2, in Q21: rotation and gain in one multiplication
+	 * 2 / decim^2 and the output gain 2 sqrt(decim), in Q18: rotation and
+	 * gain in one multiplication
 	 */
 	int32_t rot[256][2];
 	/* Rotation by the residual IF, full turn = 2^32 */
@@ -131,7 +132,8 @@ size_t ddc_in_len(const struct ddc *ddc, size_t out_len);
  * @brief Convert ADC samples to I/Q.
  *
  * @p out must hold ddc_out_len(ddc, n) bytes. Output is unsigned 8-bit
- * interleaved I/Q around 127, the RTL2832U format.
+ * interleaved I/Q around 127, the RTL2832U format. A tone of amplitude A
+ * codes at the input gives 2 sqrt(decim) A codes at the output, saturated.
  *
  * @param ddc Down-converter state.
  * @param in ADC samples, unsigned 8-bit.

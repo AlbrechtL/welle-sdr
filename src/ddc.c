@@ -30,9 +30,23 @@
 
 #include "ddc.h"
 
-/* Output in Q21: a tone of amplitude A at the input gives A * 2^21 */
-#define DDC_OUT_SHIFT  21
+/*
+ * Output in Q18: a tone of amplitude A at the input gives
+ * A * DDC_GAIN * sqrt(decim) * 2^18 before saturation.
+ */
+#define DDC_OUT_SHIFT  18
 #define DDC_OUT_CENTER 127
+
+/*
+ * Output gain over the input level is DDC_GAIN * sqrt(decim). The CIC
+ * lowers white ADC noise by sqrt(decim): the sqrt(decim) keeps the noise at
+ * the same level in output codes at any rate, so that it is not rounded
+ * away at high decimation (at 250 kS/s, decimation 32, the output was a
+ * constant code between the pulses of a weak signal). DDC_GAIN, 6 dB,
+ * makes up for the ADC level, which the AD9280 module's front end keeps
+ * far below full scale.
+ */
+#define DDC_GAIN 2.0
 
 #define DDC_ROT_BITS 8U
 #define DDC_ROT_SIZE (1U << DDC_ROT_BITS)
@@ -209,11 +223,14 @@ void ddc_init(struct ddc *ddc, const struct ddc_plan *plan, int32_t if_hz, bool 
 
 	/*
 	 * A real tone of amplitude A gives A / 2 at baseband and decim^2 in the
-	 * CIC, so the output gain is 2 / decim^2. |comb output| <= 128 decim^2,
-	 * so comb output * rot stays below 2^29.
+	 * CIC, so the gain correction is 2 / decim^2, times the output gain.
+	 * |comb output| <= 128 decim^2 and |rot| <= 2^19 * 2 * sqrt(32) / decim^2,
+	 * so each product stays below 2^29.5 and their sum below 2^30.
 	 */
+	const double scale = (double)(1UL << (DDC_OUT_SHIFT + 1U)) * DDC_GAIN *
+			     sqrt((double)plan->decim) / (double)decim2;
+
 	for (uint32_t i = 0U; i < DDC_ROT_SIZE; i++) {
-		const double scale = (double)(1UL << (DDC_OUT_SHIFT + 1U)) / (double)decim2;
 		/* sin(x) = cos(x - quarter turn), from the same table points */
 		const uint32_t i_sin = (i - DDC_ROT_SIZE / 4U) & (DDC_ROT_SIZE - 1U);
 
@@ -239,7 +256,7 @@ size_t ddc_in_len(const struct ddc *ddc, size_t out_len)
 	return outputs * ddc->decim + (ddc->decim - 1U - ddc->phase);
 }
 
-/* Q21 value to the output byte: round, add the center, saturate */
+/* Q18 value to the output byte: round, add the center, saturate */
 static inline uint8_t ddc_to_u8(int32_t y)
 {
 	const int32_t v = (y + (DDC_OUT_CENTER << DDC_OUT_SHIFT) + (1 << (DDC_OUT_SHIFT - 1))) >>
@@ -288,7 +305,7 @@ static inline void ddc_emit(const struct ddc_cfg *cfg, struct ddc_run *r, uint32
 	const uint32_t c1_q = int2_q - r->comb1_q;
 	const int32_t ai = (int32_t)(c1_i - r->comb2_i);
 	const int32_t aq = (int32_t)(c1_q - r->comb2_q);
-	/* y = a * e^(-j phase) * gain, Q21 */
+	/* y = a * e^(-j phase) * gain, Q18 */
 	const int32_t yi = ai * cs[0] + aq * cs[1];
 	const int32_t yq = (aq * cs[0] - ai * cs[1]) * cfg->q_sign;
 

@@ -510,6 +510,15 @@ The down-converter is `src/ddc.c`:
 2. A second-order CIC decimates by D = fs / host rate, with additions only.
 3. A complex rotation per output sample removes the residual |IF| - fs / 4.
 
+The rotation also applies the output gain, 2 * sqrt(D): a tone of A codes at the ADC gives
+2 * sqrt(D) * A codes in I/Q, saturated at 0 and 255. The CIC lowers white ADC noise by
+sqrt(D), so sqrt(D) keeps the noise at the same level in output codes at every rate; the
+factor 2 (6 dB) makes up for the low ADC level through the module's front end. With unity
+gain, the output at 250 kS/s (D = 32) was one constant code between the pulses of a weak
+433 MHz sensor, the pulses swung +/-4 codes, and rtl_433 decoded nothing; with the gain it
+decodes the sensor at 25 dB SNR. The 8-bit output has no AGC: a strong signal can clip at high
+decimation.
+
 The IF is the one the host writes into the demodulator (page 1, regs 0x19..0x1b), the spectrum
 inversion bit is page 1 reg 0x15 bit 0. Without a tuner librtlsdr switches to direct sampling
 and writes the center frequency as the IF, so the stream shows the spectrum at AD IN around
