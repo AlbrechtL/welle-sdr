@@ -88,6 +88,7 @@ enum rtl_block {
 #define RTL_DEMOD_RSAMP_PAGE 1U
 #define RTL_DEMOD_RSAMP_REG  0x9fU
 #define RTL_DEMOD_RSAMP_LEN  4U
+#define RTL_DEMOD_RSAMP_BIT27 BIT(27)
 
 /* Demod page 1 reg 0x15 bit 0: spectrum inversion (librtlsdr: on for R820T, off in direct sampling) */
 #define RTL_DEMOD_INV_PAGE 1U
@@ -317,7 +318,14 @@ static void rtl_demod_written(struct usbd_class_data *const c_data, const uint8_
 
 	if (page == RTL_DEMOD_RSAMP_PAGE && reg <= RTL_DEMOD_RSAMP_REG + 3U &&
 	    reg + len > RTL_DEMOD_RSAMP_REG) {
-		const uint32_t ratio = sys_get_be32(&p[RTL_DEMOD_RSAMP_REG]);
+		uint32_t ratio = sys_get_be32(&p[RTL_DEMOD_RSAMP_REG]);
+
+		/*
+		 * The register holds 28 bits; the demodulator extends bit 27 into
+		 * bit 28, as librtlsdr's real_rsamp_ratio does. Rates from 225 to
+		 * 300 kS/s need it (250 kS/s would read as 562.5 kS/s).
+		 */
+		ratio |= (ratio & RTL_DEMOD_RSAMP_BIT27) << 1;
 
 		/* librtlsdr writes the high half first, wait for the low half */
 		if (ratio != 0U && reg + len > RTL_DEMOD_RSAMP_REG + 2U) {

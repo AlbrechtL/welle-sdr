@@ -140,7 +140,9 @@ existing files.
     AGC (`rtlsdr_set_agc_mode()`). Test is bit 1, RTL AGC bit 5; RTL AGC turns on the IF AGC.
   - Page 1 reg 0x01 bit 3: I2C repeater to the tuner.
   - Page 1 regs 0x9f..0xa2: resampler ratio, big-endian, high half written first. Sample rate =
-    28.8 MHz * 2^22 / ratio.
+    28.8 MHz * 2^22 / ratio. The register holds 28 bits and bit 27 extends into bit 28
+    (librtlsdr's `real_rsamp_ratio`): rates of 225 to 300 kS/s, such as rtl_433's default
+    250 kS/s, need 29 bits.
   - Page 1 regs 0x19..0x1b: IF frequency.
 - USB block `USB_EPA_CTL` (0x2148): `0x1002` stops and flushes the FIFO, `0x0000` runs. Streaming
   only runs while it is 0.
