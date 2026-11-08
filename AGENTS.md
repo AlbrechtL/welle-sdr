@@ -86,6 +86,10 @@ existing files.
   `usbd_is_suspended()`. Off while not configured or suspended (an unplug reads as a suspend),
   one blink and then on when the host configures the device (also after a resume), 5 Hz blink
   while streaming.
+- `src/cpu_load.c`: CPU load from the idle thread's time, accounted in the thread switch hook
+  (`CONFIG_TRACING_USER`, `sys_trace_thread_switched_in_user()`) against TIM4 at 10 kHz (node
+  `tim4` stays disabled, registers programmed directly). The hook may run before `tp` is
+  restored: it uses `k_sched_current_thread_query()`, not `k_current_get()`.
 
 ## Hardware and host setup
 
@@ -282,6 +286,10 @@ existing files.
 - Raw mode (README "Raw mode") is capped at 6 MS/s (DAB at librtlsdr's IF of 1.625 MHz),
   measured lossless; 8 MS/s loses about 6 %. The ADC level is too low for welle-cli to sync
   on 5C (analog front end, README "IF AGC").
+- Interrupts are held back while a thread runs that an ISR switched to: the PFIC keeps the
+  ISR active until a thread resumes through `mret` (README "CPU load and the kernel clock").
+  A thread that never blocks stops the kernel clock; tick-based measurements see only the
+  idle thread. A fix belongs in Zephyr's QingKe interrupt exit, not in this app.
 - Timing on the target: `k_cycle_get_32()` jumps back by one 10 ms tick, so time only
   intervals shorter than a tick with it (one call per measurement); a 10-call loop over
   1.7 M cycles read as 0.3 M and hid that the first DDC was 6x too slow.

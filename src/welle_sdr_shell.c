@@ -16,6 +16,7 @@
 
 #include <dvp_adc.h>
 
+#include "cpu_load.h"
 #include "if_agc.h"
 #include "if_agc_ctl.h"
 #include "r820t2.h"
@@ -144,6 +145,7 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 		    (unsigned long long)status.xfers * CONFIG_WELLE_SDR_XFER_SIZE);
 
 	print_ddc(sh);
+	shell_print(sh, "CPU load:     %u %%", cpu_load_pct());
 
 	return 0;
 }

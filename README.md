@@ -34,6 +34,21 @@ LED1 shows the USB state once a jumper wire connects J3 LED1 to PD0: it is off w
 has configured the device or the cable is removed, blinks once and then stays on when the host
 configures the device, and blinks at 5 Hz while samples are streamed.
 
+## CPU load and the kernel clock
+
+After an interrupt whose handler wakes a thread, Zephyr switches to that thread without an `mret`.
+The PFIC keeps that interrupt active (`GISR` reads 0x101 in thread context, `IACTR` shows the
+interrupt, e.g. USART2) and holds back all other interrupts, SysTick included, until a thread
+resumes through `mret`, in practice the idle thread. A thread that runs without blocking stops
+the kernel clock: a 4.2 s busy loop in a shell command saw no tick, and `k_uptime_get()` did not
+advance. While the CPU idles often, as during streaming, interrupts and ticks are only delayed.
+This is also why the cycle counter can jump back by one tick and why the shell drops typed
+characters while samples stream.
+
+So the CPU load cannot be sampled from the tick (every sample lands in the idle thread), and
+`CONFIG_SCHED_THREAD_USAGE` or Zephyr's `CONFIG_CPU_LOAD`, which time with the SysTick cycle
+counter, are wrong too. `src/cpu_load.c` times the idle thread at thread switches with TIM4.
+
 ## Tuner wiring
 
 | R820T2                     | CH32V307V-EVT-R1 |

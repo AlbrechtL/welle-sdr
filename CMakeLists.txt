@@ -12,6 +12,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(welle-sdr)
 
 target_sources(app PRIVATE
+  src/cpu_load.c
   src/ddc.c
   src/if_agc.c
   src/if_agc_ctl.c

@@ -9,6 +9,7 @@
 
 #include <zephyr/logging/log.h>
 
+#include "cpu_load.h"
 #include "if_agc.h"
 #include "status_led.h"
 
@@ -162,6 +163,8 @@ int main(void)
 	if (err != 0) {
 		LOG_WRN("IF AGC PWM not available (%d)", err);
 	}
+
+	cpu_load_init();
 
 	err = status_led_init(&rtl_usbd);
 	if (err != 0) {
