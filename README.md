@@ -42,8 +42,8 @@ GND) shows the state once per second:
 ```
 433.920      MHz       center frequency, kHz resolution
 IQ   1MS/s run         format (IQ, RAW, TEST), host sample rate, streaming
-Gain 19.7dB  PLL ok    tuner gain (or auto), PLL lock
 ADC 8MS/s lost 2.4%    ADC rate, ADC samples lost in the last second
+Gain 19.7dB  PLL ok    tuner gain (or auto), PLL lock
 DDC gain +21.1dB       down-converter output gain (I/Q only), or "off"
 CPU83% RAM86% FL32%    CPU load, RAM and flash use
 USB ok, running        USB and host state, or the overload warning

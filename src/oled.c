@@ -329,7 +329,7 @@ static void fill_tuner(struct oled_screen *s, const struct rtl2832u_status *st)
 	}
 
 	r820t2_decode(r820t2_regs(), &fields);
-	set_row(s, 3, "Gain %-7s PLL %s", gain_str, fields.pll_locked ? "ok" : "--");
+	set_row(s, 4, "Gain %-7s PLL %s", gain_str, fields.pll_locked ? "ok" : "--");
 }
 
 /*
@@ -424,7 +424,7 @@ static bool fill_stream(struct oled_screen *s, const struct rtl2832u_status *st)
 	fmt_mega(rate, sizeof(rate), src.adc_rate);
 	if (!valid) {
 		/* First window after a start or a rate change */
-		set_row(s, 4, "ADC %sS/s", rate);
+		set_row(s, 3, "ADC %sS/s", rate);
 		return false;
 	}
 
@@ -434,7 +434,7 @@ static bool fill_stream(struct oled_screen *s, const struct rtl2832u_status *st)
 		(void)snprintf(line, sizeof(line), "ADC %sS/s lost %u%%", rate, (lost + 5U) / 10U);
 	}
 
-	set_row(s, 4, "%s", line);
+	set_row(s, 3, "%s", line);
 
 	/* The producer does not keep up with the ADC */
 	return valid && lost >= OLED_OVERLOAD_PERMILLE;
