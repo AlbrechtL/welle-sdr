@@ -75,6 +75,22 @@ static void print_raw(const struct shell *sh, const struct sample_src_stats *raw
 		    raw->dropped, raw->raw_lease_ends);
 }
 
+/* Down-converter output gain: the switch, and the gain of the running plan */
+static void print_ddc_gain(const struct shell *sh, const struct sample_src_stats *ddc)
+{
+	const char *sw = ddc->gain_on ? "on" : "off";
+
+	/* The plan is made when the stream starts: no gain to show before */
+	if (!ddc->running || !ddc->planned || ddc->mode == SAMPLE_SRC_MODE_RAW) {
+		shell_print(sh, "DDC gain:     %s", sw);
+	} else if (ddc->gain_db10 == 0) {
+		shell_print(sh, "DDC gain:     %s, unity in this plan", sw);
+	} else {
+		shell_print(sh, "DDC gain:     %s, +%d.%d dB in this plan", sw, ddc->gain_db10 / 10,
+			    ddc->gain_db10 % 10);
+	}
+}
+
 static void print_ddc(const struct shell *sh)
 {
 	struct sample_src_stats ddc;
@@ -105,6 +121,7 @@ static void print_ddc(const struct shell *sh)
 			    si_fmt(buf, sizeof(buf), ddc.actual_rate, "S/s"), ddc.ppm_error);
 	}
 
+	print_ddc_gain(sh, &ddc);
 	shell_print(sh, "DDC load:     %u %% (estimated %u %%)", ddc.load_pct, ddc.est_load_pct);
 	shell_print(sh, "DDC output:   %u transfers, %u bytes dropped", ddc.xfers, ddc.dropped);
 }
@@ -808,6 +825,38 @@ static int cmd_agc_target(const struct shell *sh, size_t argc, char **argv)
 	return if_agc_set_target((uint16_t)(codes * 16UL));
 }
 
+static int cmd_ddc_gain(const struct shell *sh, size_t argc, char **argv)
+{
+	struct sample_src_stats ddc;
+
+	if (argc > 1) {
+		if (strcmp(argv[1], "on") == 0) {
+			sample_src_set_ddc_gain(true);
+		} else if (strcmp(argv[1], "off") == 0) {
+			sample_src_set_ddc_gain(false);
+		} else {
+			shell_error(sh, "Use on or off");
+			return -EINVAL;
+		}
+
+		/* The producer re-plans with the new gain */
+		k_msleep(50);
+	}
+
+	sample_src_get_stats(&ddc);
+	print_ddc_gain(sh, &ddc);
+
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_ddc,
+	SHELL_CMD_ARG(gain, NULL,
+		      "Output gain 2 sqrt(decimation) over the ADC level: [on|off], "
+		      "off gives unity gain",
+		      cmd_ddc_gain, 1, 1),
+	SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_agc,
 	SHELL_CMD_ARG(fixed, NULL, "Voltage while the loop is off: <mV>", cmd_agc_fixed, 2, 0),
 	SHELL_CMD_ARG(pwm, NULL,
@@ -865,6 +914,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_welle_sdr,
 	SHELL_CMD_ARG(status, NULL, "Show USB, stream and tuner state", cmd_status, 1, 0),
 	SHELL_CMD(tuner, &sub_tuner, "R820T2 tuner commands", NULL),
 	SHELL_CMD(adc, &sub_adc, "AD9280 ADC capture commands", NULL),
+	SHELL_CMD(ddc, &sub_ddc, "Down-converter (I/Q output) commands", NULL),
 	SHELL_CMD_ARG(agc, &sub_agc, "IF AGC on the R820T2 IF_AGC pin (PA15)", cmd_agc, 1, 0),
 	SHELL_CMD_ARG(testsig, NULL, "Square wave on PA7 for AD IN: <hz> or off", cmd_testsig,
 		      2, 0),

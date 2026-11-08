@@ -58,7 +58,9 @@ existing files.
   `tests/raw_mode`.
 - `src/ddc.c`: down-converter (fs / 4 mixer, CIC2, rotation) and rate plan with a CPU load
   model. Output gain 2 * sqrt(decimation), folded into the rotation table; the output shift
-  (Q18) is chosen so the products stay within int32 up to decimation 32. Pure C, built with `-O2` (2.2x faster than `-Os`), host tests in `tests/ddc`
+  (Q18) is chosen so the products stay within int32 up to decimation 32. `ddc_init()` takes
+  a switch for it (`welle-sdr ddc gain on|off`, `sample_src_set_ddc_gain()`) and stores the
+  applied gain in 0.1 dB for the shell and the display. Pure C, built with `-O2` (2.2x faster than `-Os`), host tests in `tests/ddc`
   (`west twister -p native_sim -T apps/welle-sdr/tests/ddc`), including a bit-exact
   per-sample reference: keep it in sync when the arithmetic changes.
 - `src/testsig.c`: square wave on PA7 (TIM3_CH2) for AD IN, registers programmed directly

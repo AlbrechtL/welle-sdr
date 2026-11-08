@@ -89,7 +89,7 @@ static size_t run_tone(double tone_hz, double dc, int32_t if_hz, uint32_t out_ra
 	struct ddc ddc;
 
 	zassert_ok(ddc_plan(out_rate, if_hz, plan));
-	ddc_init(&ddc, plan, if_hz, invert);
+	ddc_init(&ddc, plan, if_hz, invert, true);
 	make_tone(in, TEST_IN_LEN, tone_hz, TEST_AMPLITUDE, dc, plan->adc_rate);
 
 	return ddc_process(&ddc, in, TEST_IN_LEN, out);
@@ -206,9 +206,12 @@ ZTEST(ddc, test_amplitude)
 	static const struct {
 		uint32_t rate;
 		double amp;
+		bool gain;
 	} cases[] = {
-		{1000000U, 12.0},
-		{250000U, 4.0},
+		{1000000U, 12.0, true},
+		{250000U, 4.0, true},
+		{1000000U, 40.0, false},
+		{250000U, 40.0, false},
 	};
 	static uint8_t in[TEST_IN_LEN];
 	static uint8_t out[TEST_OUT_LEN];
@@ -223,18 +226,26 @@ ZTEST(ddc, test_amplitude)
 		double mag;
 
 		zassert_ok(ddc_plan(cases[c].rate, 1100000, &plan));
-		ddc_init(&ddc, &plan, 1100000, false);
+		ddc_init(&ddc, &plan, 1100000, false, cases[c].gain);
+		/* Output gain in 0.1 dB: 20 log10(2 sqrt(decim)), or 0 for unity */
+		zassert_equal(ddc.gain_db10,
+			      cases[c].gain ? lround(200.0 * log10(2.0 * sqrt((double)plan.decim)))
+					    : 0,
+			      "case %u: gain %d", (unsigned int)c, ddc.gain_db10);
 		make_tone(in, TEST_IN_LEN, 1130000.0, cases[c].amp, 0.0, plan.adc_rate);
 		len = ddc_process(&ddc, in, TEST_IN_LEN, out);
 
-		/* CIC response at the tone, from its center at fs / 4, times 2 sqrt(decim) */
+		/* CIC response at the tone, from its center at fs / 4, times the gain */
 		f = (1130000.0 - (double)plan.adc_rate / 4.0) / (double)plan.adc_rate;
 		h = sin(TEST_PI * f * plan.decim) / (plan.decim * sin(TEST_PI * f));
-		expect = cases[c].amp * h * h * 2.0 * sqrt((double)plan.decim);
+		expect = cases[c].amp * h * h;
+		if (cases[c].gain) {
+			expect *= 2.0 * sqrt((double)plan.decim);
+		}
 		mag = iq_mag(out, len);
 
-		zassert_within(mag, expect, 0.1 * expect, "rate %u: mag %d, expected %d",
-			       cases[c].rate, (int)mag, (int)expect);
+		zassert_within(mag, expect, 0.1 * expect, "case %u: mag %d, expected %d",
+			       (unsigned int)c, (int)mag, (int)expect);
 	}
 }
 
@@ -257,7 +268,9 @@ ZTEST(ddc, test_small_noise)
 
 	zassert_ok(ddc_plan(250000U, 2124996, &plan));
 	zassert_equal(plan.decim, 32U);
-	ddc_init(&ddc, &plan, 2124996, true);
+	ddc_init(&ddc, &plan, 2124996, true, true);
+	/* 2 sqrt(32): +21.1 dB */
+	zassert_equal(ddc.gain_db10, 211);
 
 	for (size_t k = 0U; k < TEST_IN_LEN; k++) {
 		lcg = lcg * 1103515245U + 12345U;
@@ -304,10 +317,10 @@ ZTEST(ddc, test_block_boundaries)
 	zassert_ok(ddc_plan(2000000U, 1100000, &plan));
 	make_tone(in, TEST_IN_LEN, 1230000.0, TEST_AMPLITUDE, 0.0, plan.adc_rate);
 
-	ddc_init(&ddc, &plan, 1100000, false);
+	ddc_init(&ddc, &plan, 1100000, false, true);
 	ref_len = ddc_process(&ddc, in, TEST_IN_LEN, ref);
 
-	ddc_init(&ddc, &plan, 1100000, false);
+	ddc_init(&ddc, &plan, 1100000, false, true);
 	while (pos < TEST_IN_LEN) {
 		const size_t n = MIN(pieces[i % ARRAY_SIZE(pieces)], TEST_IN_LEN - pos);
 		const size_t expect = ddc_out_len(&ddc, n);
@@ -330,7 +343,7 @@ ZTEST(ddc, test_in_len)
 	struct ddc ddc;
 
 	zassert_ok(ddc_plan(2000000U, 1100000, &plan));
-	ddc_init(&ddc, &plan, 1100000, false);
+	ddc_init(&ddc, &plan, 1100000, false, true);
 	(void)memset(in, 128, sizeof(in));
 
 	/* Leave the state at phase 1 */
@@ -449,7 +462,7 @@ ZTEST(ddc, test_matches_reference)
 		size_t i = c;
 
 		zassert_ok(ddc_plan(cases[c].rate, cases[c].if_hz, &plan), "case %u", (unsigned int)c);
-		ddc_init(&ddc, &plan, cases[c].if_hz, (c % 2U) == 0U);
+		ddc_init(&ddc, &plan, cases[c].if_hz, (c % 2U) == 0U, true);
 		ref_len = ref_process(&ddc, &r, in, TEST_IN_LEN, ref);
 
 		while (pos < TEST_IN_LEN) {

@@ -412,6 +412,15 @@ static bool fill_stream(struct oled_screen *s, const struct rtl2832u_status *st)
 		return false;
 	}
 
+	/* Down-converter output gain; raw mode has none */
+	if (src.mode == SAMPLE_SRC_MODE_IQ && src.planned) {
+		if (src.gain_on) {
+			set_row(s, 5, "DDC gain +%d.%ddB", src.gain_db10 / 10, src.gain_db10 % 10);
+		} else {
+			set_row(s, 5, "DDC gain off");
+		}
+	}
+
 	fmt_mega(rate, sizeof(rate), src.adc_rate);
 	if (!valid) {
 		/* First window after a start or a rate change */

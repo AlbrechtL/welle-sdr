@@ -67,10 +67,12 @@ struct ddc {
 	uint8_t decim;
 	/* -1 to conjugate the output (spectrum inversion), else 1 */
 	int8_t q_sign;
+	/* Output gain over the input level in 0.1 dB: 0 without the gain */
+	int16_t gain_db10;
 	/*
 	 * cos and sin of 2 pi i / 256, times the CIC gain correction
-	 * 2 / decim^2 and the output gain 2 sqrt(decim), in Q18: rotation and
-	 * gain in one multiplication
+	 * 2 / decim^2 and the output gain (2 sqrt(decim) or 1), in Q18:
+	 * rotation and gain in one multiplication
 	 */
 	int32_t rot[256][2];
 	/* Rotation by the residual IF, full turn = 2^32 */
@@ -105,8 +107,11 @@ int ddc_plan(uint32_t out_rate, int32_t if_hz, struct ddc_plan *plan);
  * @param plan ADC rate and decimation, from ddc_plan() for the same IF.
  * @param if_hz IF to convert to baseband, in Hz; a negative IF conjugates.
  * @param invert Conjugate the output (spectrum inversion).
+ * @param gain Apply the output gain 2 sqrt(decim); false gives unity gain,
+ *             a tone of A codes at the input stays A codes at the output.
  */
-void ddc_init(struct ddc *ddc, const struct ddc_plan *plan, int32_t if_hz, bool invert);
+void ddc_init(struct ddc *ddc, const struct ddc_plan *plan, int32_t if_hz, bool invert,
+	      bool gain);
 
 /**
  * @brief Number of output bytes the next ddc_process() call produces from @p n inputs.
@@ -133,7 +138,8 @@ size_t ddc_in_len(const struct ddc *ddc, size_t out_len);
  *
  * @p out must hold ddc_out_len(ddc, n) bytes. Output is unsigned 8-bit
  * interleaved I/Q around 127, the RTL2832U format. A tone of amplitude A
- * codes at the input gives 2 sqrt(decim) A codes at the output, saturated.
+ * codes at the input gives 2 sqrt(decim) A codes at the output with the
+ * gain on (ddc_init()), A codes without it, saturated.
  *
  * @param ddc Down-converter state.
  * @param in ADC samples, unsigned 8-bit.

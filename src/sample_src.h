@@ -53,6 +53,10 @@ struct sample_src_stats {
 	int32_t if_freq;
 	/** Output conjugated (spectrum inversion). */
 	bool invert;
+	/** The down-converter output gain is switched on (sample_src_set_ddc_gain()). */
+	bool gain_on;
+	/** Output gain of the running plan over the ADC level, in 0.1 dB; 0 in raw mode. */
+	int16_t gain_db10;
 	/** Bulk IN transfers submitted since the stream started. */
 	uint32_t xfers;
 	/** Output bytes dropped because no transfer buffer was free. */
@@ -80,6 +84,16 @@ void sample_src_set_if(int32_t if_hz);
 
 /** Set the demodulator spectrum inversion. */
 void sample_src_set_inversion(bool invert);
+
+/**
+ * @brief Switch the down-converter output gain.
+ *
+ * On (the default), the I/Q output is 2 sqrt(decimation) times the ADC
+ * level; off, the ADC level (unity gain). Raw mode is not affected.
+ *
+ * @param enable Apply the gain.
+ */
+void sample_src_set_ddc_gain(bool enable);
 
 /**
  * @brief Select the stream format.

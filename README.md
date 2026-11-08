@@ -44,7 +44,7 @@ GND) shows the state once per second:
 IQ   1MS/s run         format (IQ, RAW, TEST), host sample rate, streaming
 Gain 19.7dB  PLL ok    tuner gain (or auto), PLL lock
 ADC 8MS/s lost 2.4%    ADC rate, ADC samples lost in the last second
-                       (empty)
+DDC gain +21.1dB       down-converter output gain (I/Q only), or "off"
 CPU83% RAM86% FL32%    CPU load, RAM and flash use
 USB ok, running        USB and host state, or the overload warning
 ```
@@ -588,6 +588,11 @@ gain, the output at 250 kS/s (D = 32) was one constant code between the pulses o
 433 MHz sensor, the pulses swung +/-4 codes, and rtl_433 decoded nothing; with the gain it
 decodes the sensor at 25 dB SNR. The 8-bit output has no AGC: a strong signal can clip at high
 decimation.
+
+`welle-sdr ddc gain off` switches the gain off (unity, as before the gain), `on` back on, and
+without an argument shows the switch; the gain is on after boot. The stream re-plans at once.
+`welle-sdr status` and the status display show the gain of the running plan, e.g. +21.1 dB at
+D = 32 and +12.0 dB at D = 4.
 
 The IF is the one the host writes into the demodulator (page 1, regs 0x19..0x1b), the spectrum
 inversion bit is page 1 reg 0x15 bit 0. Without a tuner librtlsdr switches to direct sampling

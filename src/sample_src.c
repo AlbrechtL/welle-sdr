@@ -52,13 +52,17 @@ struct sample_src_settings {
 	uint32_t rate;
 	int32_t if_hz;
 	bool invert;
+	/* Down-converter output gain on */
+	bool gain;
 	enum sample_src_mode mode;
 	/* Uptime when the mode was set, in ms: start of the raw mode lease */
 	uint32_t mode_ms;
 };
 
 static struct k_spinlock settings_lock;
-static struct sample_src_settings settings;
+static struct sample_src_settings settings = {
+	.gain = true,
+};
 /* Incremented on every settings change, so the producer re-plans */
 static atomic_t settings_gen;
 
@@ -67,7 +71,9 @@ static atomic_t run;
 static K_SEM_DEFINE(run_sem, 0, 1);
 
 static struct k_spinlock stats_lock;
-static struct sample_src_stats stats;
+static struct sample_src_stats stats = {
+	.gain_on = true,
+};
 
 void sample_src_set_test_mode(bool enable)
 {
@@ -106,6 +112,19 @@ void sample_src_set_inversion(bool invert)
 {
 	K_SPINLOCK(&settings_lock) {
 		settings.invert = invert;
+	}
+
+	(void)atomic_inc(&settings_gen);
+}
+
+void sample_src_set_ddc_gain(bool enable)
+{
+	K_SPINLOCK(&settings_lock) {
+		settings.gain = enable;
+	}
+
+	K_SPINLOCK(&stats_lock) {
+		stats.gain_on = enable;
 	}
 
 	(void)atomic_inc(&settings_gen);
@@ -214,6 +233,7 @@ static void stats_set_plan(const struct producer *p, int32_t if_hz)
 		stats.residual_hz = p->plan.residual_hz;
 		stats.est_load_pct = p->plan.load_pct;
 		stats.invert = p->ddc.q_sign < 0;
+		stats.gain_db10 = p->raw ? 0 : p->ddc.gain_db10;
 		stats.if_freq = if_hz;
 	}
 }
@@ -272,7 +292,7 @@ static uint16_t producer_plan_ddc(struct producer *p, const struct sample_src_se
 		return 0U;
 	}
 
-	ddc_init(&p->ddc, &p->plan, cur->if_hz, cur->invert);
+	ddc_init(&p->ddc, &p->plan, cur->if_hz, cur->invert, cur->gain);
 
 	if (!p->plan.exact) {
 		LOG_WRN("%u S/s not reachable, streaming %u S/s (%d ppm)", cur->rate,

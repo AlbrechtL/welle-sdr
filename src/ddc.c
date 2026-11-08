@@ -38,7 +38,8 @@
 #define DDC_OUT_CENTER 127
 
 /*
- * Output gain over the input level is DDC_GAIN * sqrt(decim). The CIC
+ * Output gain over the input level, unless switched off in ddc_init(), is
+ * DDC_GAIN * sqrt(decim). The CIC
  * lowers white ADC noise by sqrt(decim): the sqrt(decim) keeps the noise at
  * the same level in output codes at any rate, so that it is not rounded
  * away at high decimation (at 250 kS/s, decimation 32, the output was a
@@ -211,15 +212,18 @@ int ddc_plan(uint32_t out_rate, int32_t if_hz, struct ddc_plan *plan)
 	return 0;
 }
 
-void ddc_init(struct ddc *ddc, const struct ddc_plan *plan, int32_t if_hz, bool invert)
+void ddc_init(struct ddc *ddc, const struct ddc_plan *plan, int32_t if_hz, bool invert,
+	      bool gain)
 {
 	const uint32_t decim2 = (uint32_t)plan->decim * plan->decim;
 	const double out_rate = (double)DDC_CLOCK_HZ / ((double)plan->period * plan->decim);
+	const double out_gain = gain ? DDC_GAIN * sqrt((double)plan->decim) : 1.0;
 
 	(void)memset(ddc, 0, sizeof(*ddc));
 	ddc->decim = plan->decim;
 	/* The spectrum of a real input at -IF is the conjugate of the one at +IF */
 	ddc->q_sign = (invert != (if_hz < 0)) ? -1 : 1;
+	ddc->gain_db10 = (int16_t)lrint(200.0 * log10(out_gain));
 
 	/*
 	 * A real tone of amplitude A gives A / 2 at baseband and decim^2 in the
@@ -227,8 +231,7 @@ void ddc_init(struct ddc *ddc, const struct ddc_plan *plan, int32_t if_hz, bool 
 	 * |comb output| <= 128 decim^2 and |rot| <= 2^19 * 2 * sqrt(32) / decim^2,
 	 * so each product stays below 2^29.5 and their sum below 2^30.
 	 */
-	const double scale = (double)(1UL << (DDC_OUT_SHIFT + 1U)) * DDC_GAIN *
-			     sqrt((double)plan->decim) / (double)decim2;
+	const double scale = (double)(1UL << (DDC_OUT_SHIFT + 1U)) * out_gain / (double)decim2;
 
 	for (uint32_t i = 0U; i < DDC_ROT_SIZE; i++) {
 		/* sin(x) = cos(x - quarter turn), from the same table points */
