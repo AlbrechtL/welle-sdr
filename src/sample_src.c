@@ -60,9 +60,8 @@ struct sample_src_settings {
 };
 
 static struct k_spinlock settings_lock;
-static struct sample_src_settings settings = {
-	.gain = true,
-};
+/* The down-converter output gain is off after boot: welle-sdr ddc gain on */
+static struct sample_src_settings settings;
 /* Incremented on every settings change, so the producer re-plans */
 static atomic_t settings_gen;
 
@@ -71,9 +70,7 @@ static atomic_t run;
 static K_SEM_DEFINE(run_sem, 0, 1);
 
 static struct k_spinlock stats_lock;
-static struct sample_src_stats stats = {
-	.gain_on = true,
-};
+static struct sample_src_stats stats;
 
 void sample_src_set_test_mode(bool enable)
 {

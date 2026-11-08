@@ -88,8 +88,8 @@ void sample_src_set_inversion(bool invert);
 /**
  * @brief Switch the down-converter output gain.
  *
- * On (the default), the I/Q output is 2 sqrt(decimation) times the ADC
- * level; off, the ADC level (unity gain). Raw mode is not affected.
+ * On, the I/Q output is 2 sqrt(decimation) times the ADC level; off (the
+ * default after boot), the ADC level (unity gain). Raw mode is not affected.
  *
  * @param enable Apply the gain.
  */
