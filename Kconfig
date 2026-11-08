@@ -114,4 +114,28 @@ config WELLE_SDR_IF_AGC_RATE_HZ
 
 endmenu
 
+menu "Status display"
+
+config WELLE_SDR_OLED
+	bool "Status display"
+	default y
+	depends on DT_HAS_SOLOMON_SSD1306_ENABLED
+	select DISPLAY
+	help
+	  Show the tuned frequency, stream format, gain, CPU load and lost
+	  ADC samples on the SSD1306 OLED (node "oled"). It shares the bit-banged tuner bus:
+	  each write takes the bus for about 3 ms, the CPU is busy for the
+	  whole write, and only changed characters are sent.
+
+config WELLE_SDR_OLED_PERIOD_MS
+	int "Display update interval, in ms"
+	default 1000
+	range 200 5000
+	depends on WELLE_SDR_OLED
+	help
+	  The display is redrawn this often. The CPU load is measured over
+	  one second.
+
+endmenu
+
 source "Kconfig.zephyr"

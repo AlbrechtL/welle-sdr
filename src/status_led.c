@@ -10,6 +10,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/usb/usbd.h>
 
 #include "rtl2832u.h"
@@ -29,6 +30,9 @@ static const struct gpio_dt_spec status_led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), g
 
 static struct usbd_context *status_led_ctx;
 
+/* What the LED shows: configured by the host and not suspended */
+static atomic_t usb_up;
+
 static void status_led_tick(struct k_work *work);
 
 static K_WORK_DELAYABLE_DEFINE(status_led_work, status_led_tick);
@@ -44,6 +48,7 @@ static void status_led_tick(struct k_work *work)
 
 	rtl2832u_get_status(&status);
 	configured = status.configured && !usbd_is_suspended(status_led_ctx);
+	(void)atomic_set(&usb_up, configured ? 1 : 0);
 
 	if (configured && !was_configured) {
 		blink_ticks = 2U * STATUS_LED_BLINK_TICKS;
@@ -85,4 +90,9 @@ int status_led_init(struct usbd_context *ctx)
 	(void)k_work_schedule(&status_led_work, STATUS_LED_TICK);
 
 	return 0;
+}
+
+bool status_led_usb_up(void)
+{
+	return atomic_get(&usb_up) != 0;
 }

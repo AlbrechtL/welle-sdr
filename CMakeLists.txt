@@ -28,6 +28,11 @@ target_sources(app PRIVATE
   src/welle_sdr_shell.c
 )
 
+target_sources_ifdef(CONFIG_WELLE_SDR_OLED app PRIVATE
+  src/font5x7.c
+  src/oled.c
+)
+
 target_include_directories(app PRIVATE include)
 
 # The down-converter sample loop: -O2 is 2.2 times faster than the default -Os (measured)

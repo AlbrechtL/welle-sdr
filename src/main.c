@@ -11,6 +11,7 @@
 
 #include "cpu_load.h"
 #include "if_agc.h"
+#include "oled.h"
 #include "status_led.h"
 
 LOG_MODULE_REGISTER(welle_sdr, LOG_LEVEL_INF);
@@ -165,6 +166,11 @@ int main(void)
 	}
 
 	cpu_load_init();
+
+	/* After the IF AGC: display writes float the IF_AGC pin */
+	if (IS_ENABLED(CONFIG_WELLE_SDR_OLED)) {
+		oled_start();
+	}
 
 	err = status_led_init(&rtl_usbd);
 	if (err != 0) {

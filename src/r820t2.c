@@ -129,7 +129,10 @@ static const struct device *const i2c_dev = DEVICE_DT_GET(R820T2_I2C_NODE);
 static const struct gpio_dt_spec scl_pin = GPIO_DT_SPEC_GET(R820T2_I2C_NODE, scl_gpios);
 static const struct gpio_dt_spec sda_pin = GPIO_DT_SPEC_GET(R820T2_I2C_NODE, sda_gpios);
 
-/* Serializes bus access and shadow updates between the usbd and shell threads */
+/*
+ * Serializes bus access and shadow updates between the usbd and shell
+ * threads, and the bus with the display (r820t2_bus_acquire())
+ */
 static K_MUTEX_DEFINE(tuner_lock);
 
 /*
@@ -714,6 +717,30 @@ int r820t2_bus_scan(uint8_t *found, size_t max, size_t *count)
 	k_mutex_unlock(&tuner_lock);
 
 	return err;
+}
+
+int r820t2_bus_acquire(void)
+{
+	int err;
+
+	k_mutex_lock(&tuner_lock, K_FOREVER);
+
+	/* A wiring fault is recorded, the other device's transfers are not */
+	err = bus_guard();
+	if (err != 0) {
+		k_mutex_unlock(&tuner_lock);
+		return err;
+	}
+
+	if_agc_bus_hold(true);
+
+	return 0;
+}
+
+void r820t2_bus_release(void)
+{
+	if_agc_bus_hold(false);
+	k_mutex_unlock(&tuner_lock);
 }
 
 int r820t2_read_live(uint8_t *out, size_t len)

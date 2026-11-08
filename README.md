@@ -34,6 +34,61 @@ LED1 shows the USB state once a jumper wire connects J3 LED1 to PD0: it is off w
 has configured the device or the cable is removed, blinks once and then stays on when the host
 configures the device, and blinks at 5 Hz while samples are streamed.
 
+## Status display
+
+An SSD1306 128x64 OLED (0.96", I2C address 0x3c) on the tuner bus (SCL PB10, SDA PB11, 3.3 V,
+GND) shows the state once per second:
+
+```
+433.920      MHz       center frequency, kHz resolution
+IQ   1MS/s run         format (IQ, RAW, TEST), host sample rate, streaming
+Gain 19.7dB  PLL ok    tuner gain (or auto), PLL lock
+ADC 8MS/s lost 2.4%    ADC rate, ADC samples lost in the last second
+                       (empty)
+CPU83% RAM86% FL32%    CPU load, RAM and flash use
+USB ok, running        USB and host state, or the overload warning
+```
+
+The last line:
+
+| Text                | Meaning                                                          |
+|---------------------|------------------------------------------------------------------|
+| `USB not connected` | Cable removed, or the PC has not set up the device yet (LED1 off) |
+| `USB ok, connected` | The PC has configured the device, no program uses it             |
+| `USB ok, running`   | A program (rtl_sdr, rtl_tcp, welle.io, ...) has opened it        |
+
+`running` is librtlsdr powering the demodulator on (`DEMOD_CTL`) in `rtlsdr_open()`, until
+`rtlsdr_close()`. The USB state follows LED1: a removed cable reads as a suspend (no VBUS
+detection), and the device stays configured. While no program has the device open, the top
+shows `welle-sdr` and only the CPU line and the USB state are shown.
+
+The ADC rate is rounded to 0.1 MS/s; the loss has one decimal where it fits the row. RAM and
+flash use are the linker's figures (RAM of `CONFIG_SRAM_SIZE`, flash of `CONFIG_FLASH_SIZE`)
+and do not change at runtime: there is no heap.
+
+- The display shares the bit-banged tuner bus: each write takes the bus like a tuner access
+  (`tuner_lock`, wiring check, PA15 floated), so host tuner requests wait for at most one
+  write, about 3 ms. Only characters that changed are written, at most four per write.
+- The display thread runs at the lowest application priority, below the producer.
+- CPU load: the share of time outside the idle thread over the last second, also shown by
+  `welle-sdr status`. A thread switch hook (`CONFIG_TRACING_USER`) accounts the idle time
+  against TIM4 counting at 10 kHz; interrupts count for the thread they interrupt. At 1 MS/s
+  I/Q it reads 83 % (82 % without the display), the down-converter alone 75 %. The kernel
+  clock cannot be used for this, see "CPU load and the kernel clock".
+- The display costs about 1 % CPU while streaming. Streaming at 1 MS/s drops no bytes with it;
+  a few KB are dropped when the host stops reading, with or without the display.
+- `lost`: ADC samples that never reached the stream over the last update interval. Expected is
+  the ADC rate times the time on TIM4; received are the completed DMA blocks minus the ones
+  the producer did not take in time (`overruns`). Most losses are not counted anywhere else:
+  late block interrupts merge (README "CPU load and the kernel clock"), and only some of them
+  show up as `Spurious IRQs`. Host-side drops (no free USB transfer) are not included.
+- At 10 % lost or more, the last line shows `CPU OVERLOADED` in inverse video (the panel is
+  monochrome) instead of the USB state. Measured: 1 MS/s loses 2.4 % (startup windows up to
+  8 %), 2.4 MS/s 42 %, 2.048 MS/s 67 %; the CPU load stays at about 83 % in all three, as
+  blocks are skipped rather than queued.
+- If the display does not answer at boot, a `Display not available` warning is logged and the
+  tuner works as before. `CONFIG_WELLE_SDR_OLED=n` removes the display code.
+
 ## CPU load and the kernel clock
 
 After an interrupt whose handler wakes a thread, Zephyr switches to that thread without an `mret`.
@@ -101,7 +156,7 @@ point `r820t2.c` at it.
 ```
 Pull-ups:     SCL ok, SDA ok
 Idle levels:  SCL high, SDA high
-Bus scan:     0x1a
+Bus scan:     0x1a 0x3c
 Chip ID:      ok (raw 0x69)
 PLL lock:     yes
 VCO fine:     2 (nominal 2)
@@ -114,7 +169,7 @@ Registers read from the chip (not bit-reversed):
 - Pull-ups: each line is read with the internal pull-down on; it stays high only with an
   external pull-up.
 - Idle levels: both lines must be high while the bus is idle.
-- Bus scan: addresses that acknowledge.
+- Bus scan: addresses that acknowledge (0x3c is the status display).
 - If the chip does not answer, a `Hint:` line names the likely fault (missing pull-up, line
   held low, no answer: swapped or open lines, tuner power, GND).
 

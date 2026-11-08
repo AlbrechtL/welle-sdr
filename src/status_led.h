@@ -7,6 +7,8 @@
 #ifndef WELLE_SDR_STATUS_LED_H_
 #define WELLE_SDR_STATUS_LED_H_
 
+#include <stdbool.h>
+
 #include <zephyr/usb/usbd.h>
 
 /**
@@ -23,5 +25,16 @@
  * @retval -errno Error from configuring the GPIO pin.
  */
 int status_led_init(struct usbd_context *ctx);
+
+/**
+ * @brief USB state as the LED shows it.
+ *
+ * Updated every 50 ms. The controller has no VBUS detection: a removed
+ * cable reads as a suspend, while the device stays configured.
+ *
+ * @retval true The host has configured the device and the bus is not suspended.
+ * @retval false Not configured, suspended or cable removed (LED off).
+ */
+bool status_led_usb_up(void);
 
 #endif /* WELLE_SDR_STATUS_LED_H_ */

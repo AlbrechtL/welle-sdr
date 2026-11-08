@@ -260,6 +260,23 @@ void r820t2_decode(const uint8_t *regs, struct r820t2_fields *fields);
 void r820t2_bus_check(struct r820t2_bus_diag *diag);
 
 /**
+ * @brief Take the tuner bus for another device on it.
+ *
+ * Locks out tuner accesses, checks the wiring and floats the IF_AGC pin, as
+ * before a tuner transfer. Transfers to the other device are then made with
+ * the I2C API on the bus and end with r820t2_bus_release(). Keep them short:
+ * host tuner requests wait meanwhile.
+ *
+ * @retval 0 Bus taken, release it with r820t2_bus_release().
+ * @retval -ENODEV I2C controller not ready, bus not taken.
+ * @retval -EIO Wiring fault, bus not taken.
+ */
+int r820t2_bus_acquire(void);
+
+/** @brief Release the bus taken with r820t2_bus_acquire(). */
+void r820t2_bus_release(void);
+
+/**
  * @param err Bus error cause.
  *
  * @return Short description of @p err.

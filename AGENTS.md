@@ -86,6 +86,14 @@ existing files.
   `usbd_is_suspended()`. Off while not configured or suspended (an unplug reads as a suspend),
   one blink and then on when the host configures the device (also after a resume), 5 Hz blink
   while streaming.
+- `src/oled.c`: status display, SSD1306 node `oled` on `r820t2_i2c` with
+  `zephyr,deferred-init`; the thread calls `device_init()` with the bus taken. Every access
+  to another device on the tuner bus goes between `r820t2_bus_acquire()` and
+  `r820t2_bus_release()` (tuner lock, `bus_guard()`, PA15 float); keep each one short, host
+  tuner requests wait meanwhile. Only changed text cells are written. Glyphs in
+  `src/font5x7.c` (drawn for this app, column bytes, bit 0 at the top). `Lost` compares the
+  DVP blocks with the ADC rate over `cpu_load_clock()` (TIM4), not over the kernel clock:
+  block losses through merged interrupts are mostly not counted by the driver.
 - `src/cpu_load.c`: CPU load from the idle thread's time, accounted in the thread switch hook
   (`CONFIG_TRACING_USER`, `sys_trace_thread_switched_in_user()`) against TIM4 at 10 kHz (node
   `tim4` stays disabled, registers programmed directly). The hook may run before `tp` is
@@ -191,7 +199,8 @@ existing files.
   `PLL not locked!` message), then the requested frequency.
 - `CONFIG_I2C_SHELL` is enabled; its device name is `r820t2-i2c`. Its commands bypass
   `bus_guard()` and `tuner_lock`: do not use them while a host tool runs.
-- `tuner_lock` serializes bus access between the usbd thread (host requests) and the shell.
+- `tuner_lock` serializes bus access between the usbd thread (host requests), the shell and the
+  display thread (`r820t2_bus_acquire()`).
   Shadow readers do not lock.
 - The standalone power-on register set (`init_regs`) is the commonly published one (as in
   librtlsdr and the Linux driver); it has not been checked against the Rafael datasheet. With it
