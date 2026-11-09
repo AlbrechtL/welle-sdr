@@ -641,6 +641,70 @@ DDC load:     55 % (estimated 54 %)
 DDC output:   2945 transfers, 0 bytes dropped
 ```
 
+### Host sample rates
+
+The stream can only run at 144 MHz / (p * D): p is the integer ADC clock divider, D the
+decimation from 2 to 32. The plan must also keep the band edge |IF| + rate / 2 below half the
+ADC rate and the residual |IF| - fs / 4 within half the host rate. A host rate that no plan
+reaches exactly is streamed at the nearest reachable rate; the log warns
+
+```
+<wrn> sample_src: 1008000 S/s not reachable, streaming 1000000 S/s (-7936 ppm)
+```
+
+and `welle-sdr status` shows `Output rate:  1 MS/s (-7936 ppm off the host rate)`. The host
+still computes with its own rate, and the librtlsdr protocol has no way to tell it the real
+one. FM audio then runs 0.8 % slow or fast against the sound card, which runs dry or
+overflows every few seconds: drops that no CPU headroom cures.
+
+The IF comes from librtlsdr's `r82xx_set_bandwidth()`, which takes the sample rate as the
+tuner bandwidth unless the host sets one, and decides which ADC rates fit. librtlsdr programs
+the resampler ratio 28.8 MHz * 2^22 / rate in steps of 4; for all rates below that is exact.
+
+Measured at 100.6 MHz with `rtl_sdr`, 15 s per rate. Delivered: the slope of the output
+file size over time, against the host rate. DDC load: `welle-sdr status`, with the load
+model's estimate in brackets (it overestimates the path for D not a multiple of 4).
+
+| Host rate  | Used by              | IF        | ADC rate, D       | Streamed            | Delivered | DDC load    |
+|------------|----------------------|-----------|-------------------|---------------------|-----------|-------------|
+| 240 kS/s   | gqrx                 | 2.125 MHz | none              | nothing             | -         | -           |
+| 300 kS/s   | gqrx                 | 2.125 MHz | 9 MS/s, 30        | exact               | 0.00 %    | 66 % (101 %) |
+| 960 kS/s   | gqrx                 | 1.7 MHz   | 5.76 MS/s, 6      | exact               | 0.00 %    | 80 % (110 %) |
+| 1.0 MS/s   |                      | 1.7 MHz   | 8 MS/s, 8         | exact               | +0.01 %   | 85 % (76 %) |
+| 1.008 MS/s | rtl_fm               | 1.7 MHz   | 8 MS/s, 8         | 1 MS/s, -7936 ppm   | -0.81 %   | 85 % (76 %) |
+| 1.02 MS/s  | rtl_fm -M wbfm       | 1.7 MHz   | 5.142857 MS/s, 5  | 1.028571 MS/s, +8403 ppm | +0.83 % | 81 % (109 %) |
+| 1.152 MS/s | gqrx                 | 1.7 MHz   | 5.76 MS/s, 5      | exact               | -0.02 %   | 91 % (122 %) |
+| 1.2 MS/s   | gqrx                 | 1.7 MHz   | 4.8 MS/s, 4       | exact               | +0.01 %   | 74 % (65 %) |
+| 1.44 MS/s  | gqrx                 | 1.575 MHz | 5.76 MS/s, 4      | exact               | 0.00 %    | 90 % (78 %) |
+| 1.6 MS/s   | gqrx                 | 1.5 MHz   | 4.8 MS/s, 3       | exact               | -6.1 %    | 99 % (140 %) |
+| 1.8 MS/s   | gqrx                 | 1.75 MHz  | 7.2 MS/s, 4       | exact               | -12.6 %   | 99 % (98 %) |
+| 1.92 MS/s  | gqrx                 | 1.675 MHz | 5.76 MS/s, 3      | exact               | -22.0 %   | 99 % (168 %) |
+| 2.048 MS/s | welle.io (I/Q mode)  | 1.625 MHz | 10.285714 MS/s, 5 | 2.057143 MS/s, +4464 ppm | -39.9 % | 99 % (218 %) |
+| 2.4 MS/s   | gqrx                 | 1.815 MHz | 9.6 MS/s, 4       | exact               | -34.8 %   | 99 % (131 %) |
+| 2.88 MS/s  | gqrx                 | 3.57 MHz  | 14.4 MS/s, 5      | exact               | -57.6 %   | 99 % (306 %) |
+| 3.2 MS/s   | gqrx                 | 3.57 MHz  | 16 MS/s, 5        | exact               | -62.3 %   | 99 % (340 %) |
+
+240 kS/s has no plan: fs / 4 would have to lie within 120 kHz of the IF of 2.125 MHz, which
+needs an ADC rate of 8.02 to 9 MS/s and D = 34 to 37; D stops at 32. The log shows
+`No ADC rate for 240000 S/s at IF 2124996 Hz (err -34)`.
+
+gqrx (2.17, list in `ioconfig.cpp`): every rate it offers for an RTL device divides 144 MHz;
+the CPU decides. Use 1.2 MS/s, the lowest load; 300 kS/s to 1.44 MS/s also stream without
+loss. From 1.6 MS/s ADC blocks are lost: clicks, then dropouts. gqrx's own decimation runs
+on the host and does not change the load on the device.
+
+rtl_fm captures at out * (floor(1 MHz / out) + 1): 1.008 MS/s for the default 24 kHz,
+1.02 MS/s for `-M wbfm` (170 kHz). Neither divides 144 MHz; measured audio rates are
+23811 S/s (-0.79 %) and 32268 S/s (+0.84 %). Choose `-s` so that the capture rate divides
+144 MHz, for example 200 kHz or 240 kHz (both capture at 1.2 MS/s), after `-M`, which sets
+its own rate:
+
+```
+rtl_fm -f 100496000 -M wbfm -s 200000 -r 48000 - | aplay -r 48000 -f S16_LE
+```
+
+This delivers 48002 audio samples per second (+0.00 %).
+
 ### Test with the square-wave test signal
 
 `welle-sdr testsig <hz>` drives a square wave on PA7 (TIM3_CH2, `src/testsig.c`), `off` stops
