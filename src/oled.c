@@ -336,8 +336,8 @@ static void fill_tuner(struct oled_screen *s, const struct rtl2832u_status *st)
  * Share of the ADC samples lost since the last call, in 0.1 %: samples the
  * DVP never delivered (block interrupts that came late and merged, see the
  * README) and blocks the consumer did not take in time (overruns). Expected
- * is the ADC rate over the time on the CPU load clock, which keeps running
- * while the kernel clock is held back.
+ * is the ADC rate over the time on the CPU load clock (TIM4), independent
+ * of the kernel clock.
  *
  * Returns false when there is no valid window: capture stopped, restarted
  * or rate changed, or the last call too long ago.

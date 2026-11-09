@@ -8,15 +8,13 @@
  * CPU load from the time spent in the idle thread, measured at each thread
  * switch (tracing hook) against TIM4 counting at 10 kHz.
  *
- * The kernel clock is no use here: after an interrupt that switches to
- * another thread, the PFIC keeps that interrupt active until a thread
- * resumes through mret, and holds back all other interrupts meanwhile,
- * SysTick included. Ticks then wait for the next idle period (README "CPU
- * load and the kernel clock"), so neither tick sampling nor
- * CONFIG_SCHED_THREAD_USAGE, which reads the SysTick-based cycle counter,
- * sees the busy time. Thread
- * switches are not delayed. Interrupts that do not switch count for the
- * thread they interrupt.
+ * TIM4 rather than the kernel clock: without
+ * CONFIG_RISCV_ALWAYS_SWITCH_THROUGH_ECALL, the PFIC held back all
+ * interrupts, SysTick included, while a thread ran that an interrupt had
+ * switched to (README "CPU load and the kernel clock"), so neither tick
+ * sampling nor CONFIG_SCHED_THREAD_USAGE, which reads the SysTick-based
+ * cycle counter, saw the busy time. Thread switches are not delayed.
+ * Interrupts that do not switch count for the thread they interrupt.
  */
 
 #include <zephyr/device.h>

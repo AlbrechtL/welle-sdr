@@ -72,37 +72,56 @@ and do not change at runtime: there is no heap.
 - The display thread runs at the lowest application priority, below the producer.
 - CPU load: the share of time outside the idle thread over the last second, also shown by
   `welle-sdr status`. A thread switch hook (`CONFIG_TRACING_USER`) accounts the idle time
-  against TIM4 counting at 10 kHz; interrupts count for the thread they interrupt. At 1 MS/s
-  I/Q it reads 83 % (82 % without the display), the down-converter alone 75 %. The kernel
-  clock cannot be used for this, see "CPU load and the kernel clock".
+  against TIM4 counting at 10 kHz; interrupts count for the thread they interrupt. At 1.2 MS/s
+  I/Q it reads 77 %, the down-converter alone 74 %. TIM4 instead of the kernel clock: see
+  "CPU load and the kernel clock".
 - The display costs about 1 % CPU while streaming. Streaming at 1 MS/s drops no bytes with it;
   a few KB are dropped when the host stops reading, with or without the display.
 - `lost`: ADC samples that never reached the stream over the last update interval. Expected is
   the ADC rate times the time on TIM4; received are the completed DMA blocks minus the ones
   the producer did not take in time (`overruns`). Most losses are not counted anywhere else:
-  late block interrupts merge (README "CPU load and the kernel clock"), and only some of them
-  show up as `Spurious IRQs`. Host-side drops (no free USB transfer) are not included.
+  late block interrupts merge, and only some of them show up as `Spurious IRQs`. Host-side
+  drops (no free USB transfer) are not included.
 - At 10 % lost or more, the last line shows `CPU OVERLOADED` in inverse video (the panel is
-  monochrome) instead of the USB state. Measured: 1 MS/s loses 2.4 % (startup windows up to
-  8 %), 2.4 MS/s 42 %, 2.048 MS/s 67 %; the CPU load stays at about 83 % in all three, as
-  blocks are skipped rather than queued.
+  monochrome) instead of the USB state. Measured from the delivered rate: 1.0 to 1.44 MS/s
+  lose nothing, 2.4 MS/s loses 35 %, 2.048 MS/s 40 %.
+- Each display write takes the CPU for about 3 ms. Before the firmware switched threads
+  through `ecall`, the DVP block interrupt waited for the whole write, and 0.27 % of the ADC
+  blocks were lost (see "CPU load and the kernel clock").
 - If the display does not answer at boot, a `Display not available` warning is logged and the
   tuner works as before. `CONFIG_WELLE_SDR_OLED=n` removes the display code.
 
 ## CPU load and the kernel clock
 
-After an interrupt whose handler wakes a thread, Zephyr switches to that thread without an `mret`.
-The PFIC keeps that interrupt active (`GISR` reads 0x101 in thread context, `IACTR` shows the
-interrupt, e.g. USART2) and holds back all other interrupts, SysTick included, until a thread
-resumes through `mret`, in practice the idle thread. A thread that runs without blocking stops
-the kernel clock: a 4.2 s busy loop in a shell command saw no tick, and `k_uptime_get()` did not
-advance. While the CPU idles often, as during streaming, interrupts and ticks are only delayed.
-This is also why the cycle counter can jump back by one tick and why the shell drops typed
-characters while samples stream.
+After an interrupt whose handler wakes a thread, Zephyr switches to that thread in the
+interrupt exit. By default it resumes a thread that blocked earlier with a plain return from
+`z_riscv_switch()`, without an `mret`. The PFIC then keeps the interrupt active (`GISR` reads
+0x101 in thread context, `IACTR` shows the interrupt, e.g. USART2) and holds back all other
+interrupts, SysTick included, until a thread resumes through `mret`, in practice the idle
+thread. Measured with that default:
 
-So the CPU load cannot be sampled from the tick (every sample lands in the idle thread), and
-`CONFIG_SCHED_THREAD_USAGE` or Zephyr's `CONFIG_CPU_LOAD`, which time with the SysTick cycle
-counter, are wrong too. `src/cpu_load.c` times the idle thread at thread switches with TIM4.
+- A 4.2 s busy loop in a shell command saw no tick, and `k_uptime_get()` did not advance.
+- The shell dropped typed characters while samples streamed.
+- Each status display write (about 3 ms of bit-banged I2C in the lowest-priority thread, woken
+  by the tick) held back the DVP block interrupt. The driver must give the DMA a new buffer
+  within one block time (427 us at 4.8 MS/s), so 7 to 9 blocks were lost per write: 0.27 % of
+  the ADC blocks at 4.8 and 6 MS/s, in I/Q and raw mode alike, none with
+  `CONFIG_WELLE_SDR_OLED=n`. An FM station had an audible click at every display update.
+
+`prj.conf` sets `CONFIG_RISCV_ALWAYS_SWITCH_THROUGH_ECALL`: every thread switch goes through
+`ecall`, so each resumed thread is entered through the `mret` of the trap exit, and the PFIC
+releases the interrupt at every switch. Measured with it, display on:
+
+| Check                                          | Result                                    |
+|------------------------------------------------|-------------------------------------------|
+| I/Q 1.2 MS/s (ADC 4.8 MS/s), 45 s              | 2342.9 of 2343.8 blocks/s, 0 spurious IRQs, delivered rate +0.009 % |
+| Raw 2.048 MS/s (ADC 6 MS/s), 150 MB            | 2930.4 of 2929.7 blocks/s, 0 spurious IRQs, 0 lost samples |
+| Uptime while 2.4 MS/s keeps the producer busy  | 16.190 s in 16.192 s host time            |
+| Shell commands sent at full speed while streaming | 20 of 20 answered                      |
+| CPU cost at 1.2 MS/s                           | DDC load 74 % instead of 68 %             |
+
+The CPU load is still timed at thread switches with TIM4 (`src/cpu_load.c`), not with the
+tick.
 
 ## Tuner wiring
 
@@ -653,13 +672,12 @@ per-sample reference: `west twister -p native_sim -T apps/welle-sdr/tests/ddc`.
 
 ### Limits
 
-- CPU: 1 MS/s with fs = 4 MS/s needs about 55 % of the CPU. 2 MS/s (estimated 109 % at the
-  best plan) does not fit: ADC blocks are lost and the spectrum shows sidebands at the
-  block rate. Lost blocks show up as `Spurious IRQs` in `welle-sdr adc status`, as their
-  interrupts arrive late and merge, but most losses do not: compare the block rate with the
-  ADC rate (the display's `Lost`). 1 MS/s loses about 2.4 % of the ADC blocks this way (3814
-  of 3906 blocks per second, 22 spurious IRQs in 12 s); the ADC alone, without the producer,
-  delivers all of them.
+- CPU: up to 1.44 MS/s the stream is lossless at librtlsdr's IF. From 1.6 MS/s the
+  down-converter does not keep up: ADC blocks are lost (6 % at 1.6 MS/s, 35 % at 2.4 MS/s)
+  and the spectrum shows sidebands at the block rate. Lost blocks show up as `Spurious IRQs`
+  in `welle-sdr adc status`, as their interrupts arrive late and merge, but most losses do
+  not: compare the block rate with the ADC rate (the display's `Lost`) or the delivered rate
+  with the host rate.
 - The CIC droops towards the band edges (-1.1 dB at 0.2 x rate from the band center,
   -7.8 dB at 0.5 x rate) and folds signals around multiples of the output rate into the band
   with limited suppression (about 30 dB for the image of a tone near the center). The band
@@ -734,10 +752,11 @@ The band is IF +/- host rate / 2. The firmware takes the lowest exact rate 144 M
 least 2.2 times the band's upper edge (Nyquist plus 10 % for the tuner's filter skirts), capped
 at `CONFIG_WELLE_SDR_RAW_MAX_RATE` (default 6 MS/s, the highest rate measured without loss
 over USB). If the cap leaves the band's edge above half the ADC rate, flag bit 1 is set.
-At 6 MS/s about 0.25 % of the ADC blocks are still lost before the producer (2922.5 of 2929.7
-blocks per second over 20 s, 3 of them counted as spurious IRQs), see "CPU load and the
-kernel clock". The frame sample index does not show these gaps: it counts the samples the
-producer handled, and `wsdr_raw.py` reports 0 lost samples. The DVP counter registers
+At 6 MS/s all ADC blocks reach the producer (2930.4 of 2929.7 blocks per second, 0 spurious
+IRQs). Before the firmware switched threads through `ecall`, about 0.25 % were lost there
+(2922.5 of 2929.7), see "CPU load and the kernel clock". The frame sample index does not show
+such gaps: it counts the samples the producer handled, and `wsdr_raw.py` reported 0 lost
+samples then as well. The DVP counter registers
 (`ROW_CNT`, `CAPCNT`, `VLINE`) stay 0 in the JPEG mode the driver uses, so they cannot mark
 the gaps either. The bytes dropped in `welle-sdr status` after a raw capture are produced
 during the lease after the host stopped reading, not lost during the capture.

@@ -289,19 +289,20 @@ existing files.
   test-mode counter is filled word-wise; with the byte loop it limited `rtl_test -p` to
   6.5 MB/s (the usbd thread is cooperative, priority -8, and fills in its context).
 - The counter stream in test mode is unpaced; the I/Q stream is paced by the ADC.
-- CPU: the down-converter fits 1 MS/s (55 % load), not 2 MS/s; 2.048 MS/s is not an exact
-  plan. See README "I/Q stream" for the cost model and limits. `dvp_adc_start()` takes the PWM
+- CPU: at librtlsdr's IF the down-converter streams up to 1.44 MS/s without loss (1.2 MS/s:
+  74 % DDC load); from 1.6 MS/s ADC blocks are lost. 2.048 MS/s is not an exact plan. See README "I/Q stream" for the cost model and limits. `dvp_adc_start()` takes the PWM
   clock over an integer period rounded to 1 Hz (`DDC_CLOCK_HZ / period` truncated is
   rejected when it differs). Inexact plans are chosen by rate error, then by load; 2.048 MS/s
   at librtlsdr's R820T IF still runs above the CPU budget and loses ADC blocks.
 - Raw mode (README "Raw mode") is capped at 6 MS/s (DAB at librtlsdr's IF of 1.625 MHz),
-  lossless over USB; 8 MS/s loses about 6 %. About 0.25 % of the ADC blocks are lost before
-  the producer, which the frame sample index does not show (README "Raw mode"). The ADC level
-  is too low for welle-cli to sync on 5C (analog front end, README "IF AGC").
-- Interrupts are held back while a thread runs that an ISR switched to: the PFIC keeps the
-  ISR active until a thread resumes through `mret` (README "CPU load and the kernel clock").
-  A thread that never blocks stops the kernel clock; tick-based measurements see only the
-  idle thread. A fix belongs in Zephyr's QingKe interrupt exit, not in this app.
+  lossless over USB; 8 MS/s loses about 6 %. ADC blocks lost before the producer do not
+  show in the frame sample index; count the blocks per second instead (README "Raw mode").
+  The ADC level is too low for welle-cli to sync on 5C (analog front end, README "IF AGC").
+- The PFIC keeps an interrupt active until the next `mret` and holds back all others
+  meanwhile. `CONFIG_RISCV_ALWAYS_SWITCH_THROUGH_ECALL` (`prj.conf`) enters every switched-in
+  thread through `mret`. Without it a thread that an ISR switched to held back all
+  interrupts: a busy thread stopped the kernel clock, and each 3 ms display write lost 0.27 %
+  of the ADC blocks (README "CPU load and the kernel clock"). Keep the option.
 - Timing on the target: `k_cycle_get_32()` jumps back by one 10 ms tick, so time only
   intervals shorter than a tick with it (one call per measurement); a 10-call loop over
   1.7 M cycles read as 0.3 M and hid that the first DDC was 6x too slow.
