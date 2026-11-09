@@ -292,8 +292,8 @@ existing files.
 - CPU: the down-converter fits 1 MS/s (55 % load), not 2 MS/s; 2.048 MS/s is not an exact
   plan. See README "I/Q stream" for the cost model and limits. `dvp_adc_start()` takes the PWM
   clock over an integer period rounded to 1 Hz (`DDC_CLOCK_HZ / period` truncated is
-  rejected when it differs). Inexact plans are chosen by rate error, not load: 1.024 and
-  2.048 MS/s at librtlsdr's R820T IF run above the CPU budget and lose ADC blocks.
+  rejected when it differs). Inexact plans are chosen by rate error, then by load; 2.048 MS/s
+  at librtlsdr's R820T IF still runs above the CPU budget and loses ADC blocks.
 - Raw mode (README "Raw mode") is capped at 6 MS/s (DAB at librtlsdr's IF of 1.625 MHz),
   lossless over USB; 8 MS/s loses about 6 %. About 0.25 % of the ADC blocks are lost before
   the producer, which the frame sample index does not show (README "Raw mode"). The ADC level

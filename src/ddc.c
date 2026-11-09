@@ -105,7 +105,8 @@ static uint64_t ddc_load_pct(uint64_t period, uint64_t decim)
 
 /*
  * Exact plans: within the load budget the smallest residual, else the
- * smallest load. Inexact plans: the smallest rate error.
+ * smallest load. Inexact plans: the smallest rate error, then the smallest
+ * load (1.008 MS/s at IF 1.7 MHz: 8 MS/s / 8 instead of 6 MS/s / 6).
  */
 static bool ddc_better(const struct ddc_candidate *c, const struct ddc_candidate *best,
 		       bool exact)
@@ -118,7 +119,15 @@ static bool ddc_better(const struct ddc_candidate *c, const struct ddc_candidate
 	}
 
 	if (!exact) {
-		return c->err * best->period * best->decim < best->err * c->period * c->decim;
+		/* Rate errors in Hz, compared without the division */
+		const uint64_t c_err = c->err * best->period * best->decim;
+		const uint64_t best_err = best->err * c->period * c->decim;
+
+		if (c_err != best_err) {
+			return c_err < best_err;
+		}
+
+		return c->load_pct < best->load_pct;
 	}
 
 	c_ok = c->load_pct <= DDC_LOAD_BUDGET_PCT;

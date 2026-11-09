@@ -607,7 +607,9 @@ the tuned frequency, as a real RTL2832U in direct sampling mode does.
 reachable; the nearest rate is streamed and a warning gives the error in ppm.
 
 Among the exact plans it takes the smallest residual whose estimated CPU load is at most
-60 %, else the cheapest. The load model is fitted to measured times of `ddc_process()`
+60 %, else the cheapest. Among inexact plans it takes the smallest rate error and, of equal
+errors, the cheapest: 1.008 MS/s at an IF of 1.7 MHz streams 1 MS/s from 8 MS/s with D = 8
+(estimated 76 %), not from 6 MS/s with D = 6 (115 %). The load model is fitted to measured times of `ddc_process()`
 (`-O2`, 144 MHz): 7.9 cycles per input and 47 per output sample when D is a multiple of 4
 (the outputs fall on the ends of the four-sample groups), 13.3 and 86.5 cycles otherwise.
 `welle-sdr status` shows the plan, the residual, the measured and the estimated load:

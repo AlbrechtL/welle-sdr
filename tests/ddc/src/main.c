@@ -150,6 +150,23 @@ ZTEST(ddc, test_plan_inexact)
 	zassert_true(2U * (uint32_t)abs(plan.residual_hz) <= 2048000U);
 }
 
+ZTEST(ddc, test_plan_inexact_cheapest)
+{
+	struct ddc_plan plan;
+
+	/*
+	 * rtl_fm's default 1.008 MS/s at librtlsdr's IF of 1.7 MHz: 6 MS/s / 6 and
+	 * 8 MS/s / 8 both stream 1 MS/s; D 8 runs on the group-end path
+	 */
+	zassert_ok(ddc_plan(1008000U, 1700000, &plan));
+	zassert_false(plan.exact);
+	zassert_equal(plan.decim, 8U);
+	zassert_equal(plan.adc_rate, 8000000U);
+	zassert_equal(plan.actual_rate, 1000000U);
+	zassert_equal(plan.ppm_error, -7936);
+	zassert_true(plan.load_pct < 80U, "load %u", plan.load_pct);
+}
+
 ZTEST(ddc, test_plan_errors)
 {
 	struct ddc_plan plan;
